@@ -14,6 +14,7 @@ const { buildUpPlan, buildHeadlessCommand, commandExists, runningAgents } = awai
 );
 const { validateMessage, MESSAGE_TYPES } = await import('../src/core/schema.ts');
 const { defaultConfig } = await import('../src/core/config.ts');
+const { tmuxBin, detectSplitters, userTmuxPath } = await import('../src/core/splitter.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -79,4 +80,12 @@ test('commandExists detects real and missing binaries', () => {
 
 test('runningAgents is empty with no pid file', () => {
   assert.deepEqual(runningAgents(), []);
+});
+
+test('splitter list always offers tmux and the pty fallback', () => {
+  const names = detectSplitters().map((s) => s.name);
+  assert.ok(names.includes('tmux'));
+  assert.ok(names.includes('pty'));
+  assert.equal(typeof tmuxBin(), 'string');
+  assert.equal(userTmuxPath(), join(HOME, 'bin', 'tmux'));
 });

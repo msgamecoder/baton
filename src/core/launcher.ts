@@ -5,7 +5,7 @@ import { platform } from 'node:os';
 import { AGENTS_DIR } from './paths.ts';
 import { ensureHome } from './store.ts';
 import type { AgentConfig, BatonConfig } from './config.ts';
-import { pickSplitter } from './splitter.ts';
+import { pickSplitter, tmuxBin } from './splitter.ts';
 
 export interface UpPlan {
   splitter: string;
@@ -53,11 +53,12 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
   const agents = config.agents;
 
   if (splitter.name === 'tmux' && agents.length > 0) {
-    const commands = [`tmux new-session -d -s baton -n ${agents[0].name} '${paneCommand(agents[0])}'`];
+    const tmux = tmuxBin();
+    const commands = [`${tmux} new-session -d -s baton -n ${agents[0].name} '${paneCommand(agents[0])}'`];
     for (const agent of agents.slice(1)) {
-      commands.push(`tmux split-window -h -t baton '${paneCommand(agent)}'`);
+      commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent)}'`);
     }
-    commands.push('tmux attach -t baton');
+    commands.push(`${tmux} attach -t baton`);
     return { splitter: 'tmux', commands, note: 'one tmux session, one pane per agent', background: false };
   }
 
@@ -121,11 +122,11 @@ export function runningAgents(): StartedAgent[] {
 }
 
 export function tmuxSessionExists(name = 'baton'): boolean {
-  return spawnSync('tmux', ['has-session', '-t', name], { stdio: 'ignore' }).status === 0;
+  return spawnSync(tmuxBin(), ['has-session', '-t', name], { stdio: 'ignore' }).status === 0;
 }
 
 export function tmuxAttach(name = 'baton'): void {
-  spawnSync('tmux', ['attach', '-t', name], { stdio: 'inherit' });
+  spawnSync(tmuxBin(), ['attach', '-t', name], { stdio: 'inherit' });
 }
 
 export function spawnBackground(config: BatonConfig): StartedAgent[] {

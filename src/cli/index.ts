@@ -43,7 +43,7 @@ import { detectPorts } from '../core/probe.ts';
 import { listSessions, saveSession, sessionPath, sessionPreview } from '../core/session.ts';
 import { audit, readAudit } from '../core/audit.ts';
 import { protocolText } from '../core/instructions.ts';
-import { doctorReport, runInstall } from '../core/doctor.ts';
+import { doctorReport, installTmuxUser, runInstall, userInstallAvailable } from '../core/doctor.ts';
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
 
 type FlagValue = string | boolean | string[];
@@ -379,7 +379,9 @@ function cmdDoctor(flags: Flags): void {
   for (const s of report.splitters) console.log(`  ${s.available ? 'x' : ' '} ${s.name.padEnd(9)} ${s.note}`);
 
   if (report.install) {
-    console.log(`\nterminal multiplexer not required — but for real panes install:\n  ${report.install.command}\n  # ${report.install.note}`);
+    console.log(`\nfor real panes, install a multiplexer:`);
+    if (userInstallAvailable()) console.log('  baton install          tmux into ~/.baton/bin (no sudo)');
+    console.log(`  ${report.install.command}    # ${report.install.note}`);
   }
 
   if (bool(flags, 'install')) {
@@ -395,7 +397,19 @@ function cmdDoctor(flags: Flags): void {
   }
 }
 
-function cmdInstall(): void {
+function cmdInstall(flags: Flags): void {
+  if (!bool(flags, 'system') && userInstallAvailable()) {
+    console.log('installing tmux into ~/.baton/bin (no sudo needed) ...');
+    const result = installTmuxUser();
+    if (result.ok) {
+      console.log(`installed ${result.path}`);
+      console.log('run `baton splitters` to confirm');
+      return;
+    }
+    console.log(`user install failed: ${result.error}`);
+    console.log('falling back to the system installer\n');
+  }
+
   const report = doctorReport();
   if (!report.install) {
     console.log('no installer for this platform — Baton will use the PTY fallback');
@@ -821,25 +835,43 @@ async function cmdWelcome(flags: Flags): Promise<void> {
   console.log(`node      ${report.node.version} ok`);
   console.log(`platform  ${report.platform}`);
 
-  const hasPanes = report.chosen !== 'pty' && report.chosen !== 'none';
-  if (hasPanes) {
-    console.log(`panes     ${report.chosen} ok`);
+  const auto = bool(flags, 'yes') || process.env.BATON_YES === '1';
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  let chosen = report.chosen;
+  let panesOk = chosen !== 'pty' && chosen !== 'none';
+
+  if (panesOk) {
+    console.log(`panes     ${chosen} ok`);
   } else {
-    console.log('panes     none yet — agents will run in the background (PTY fallback)');
-    if (report.install) {
-      console.log(`          for real split panes: ${report.install.command}`);
-      const auto = bool(flags, 'yes') || process.env.BATON_YES === '1';
-      const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-      if (auto || (interactive && (await confirm('\nInstall it now? [y/N] ')))) {
-        console.log(`running: ${report.install.command}`);
-        const code = runInstall(report.install);
-        console.log(code === 0 ? 'installed — run `baton splitters` to confirm' : `installer exited ${code}`);
+    console.log('panes     none — agents would run in the BACKGROUND with no interface');
+    if (userInstallAvailable()) {
+      console.log('          baton can install tmux into ~/.baton/bin — no sudo needed');
+      if (auto || (interactive && (await confirm('Install tmux now? [y/N] ')))) {
+        const result = installTmuxUser();
+        if (result.ok) {
+          console.log(`          installed ${result.path}`);
+          chosen = doctorReport().chosen;
+          panesOk = chosen !== 'pty' && chosen !== 'none';
+          if (panesOk) console.log(`panes     ${chosen} ok`);
+        } else {
+          console.log(`          install failed: ${result.error}`);
+        }
       }
+    } else if (report.install) {
+      console.log(`          install it yourself: ${report.install.command}`);
     }
   }
 
   if (bool(flags, 'no-start')) {
-    console.log('\nnothing was started. run `baton` when you are ready.');
+    console.log('\nnothing was started.');
+    return;
+  }
+
+  if (!panesOk && !bool(flags, 'force') && !bool(flags, 'dry-run')) {
+    console.log('\nnot starting — without panes there is no interface to use.');
+    console.log('  baton install     install tmux (no sudo), then run `baton` again');
+    console.log('  baton --force     start them in the background anyway (baton logs <agent>)');
+    console.log('  baton console     slash-command console in this terminal');
     return;
   }
 
@@ -858,7 +890,7 @@ starting a second copy. Use --no-start to set up only, or --yes to skip the prom
 
 setup
   doctor [--install]         check node/splitter setup, optionally install one
-  install                    install the terminal multiplexer for this platform
+  install [--system]         install tmux (no sudo by default, into ~/.baton/bin)
   up / down / kill           launch agents + daemon / stop daemon / stop everything
   splitters                  show available terminal splitters
 
@@ -917,7 +949,7 @@ async function main(): Promise<void> {
       cmdDoctor(flags);
       break;
     case 'install':
-      cmdInstall();
+      cmdInstall(flags);
       break;
     case 'up':
       await cmdUp(flags);
