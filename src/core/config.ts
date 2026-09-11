@@ -1,10 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { CONFIG_PATH, DEFAULT_PORT } from './paths.ts';
 import { ensureHome } from './store.ts';
+import type { CustomProviderDef } from '../providers/registry.ts';
 
 export interface AgentConfig {
   name: string;
-  command: string;
+  command?: string;
   provider?: string;
   model?: string;
   modelFlag?: string;
@@ -19,32 +20,21 @@ export interface BatonConfig {
   port: number;
   maxHop: number;
   autoContinue: boolean;
+  defaultProvider?: string;
+  defaultModel?: string;
+  autoApprove?: boolean;
+  customProviders?: CustomProviderDef[];
 }
 
 export const DEFAULT_MAX_HOP = 8;
 
 export function defaultConfig(): BatonConfig {
   return {
-    agents: [
-      {
-        name: 'oc',
-        command: 'opencode',
-        provider: 'opencode',
-        modelFlag: '--model',
-        headless: 'opencode run "{prompt}"',
-      },
-      {
-        name: 'cc',
-        command: 'cmd',
-        provider: 'command-code',
-        modelFlag: '--model',
-        resumeFlag: '--continue',
-        headless: 'cmd -p "{prompt}"',
-      },
-    ],
+    agents: [{ name: 'left' }, { name: 'right' }],
     port: DEFAULT_PORT,
     maxHop: DEFAULT_MAX_HOP,
     autoContinue: true,
+    autoApprove: false,
   };
 }
 
@@ -59,6 +49,10 @@ export function loadConfig(): BatonConfig {
       port: typeof parsed.port === 'number' ? parsed.port : base.port,
       maxHop: typeof parsed.maxHop === 'number' ? parsed.maxHop : base.maxHop,
       autoContinue: typeof parsed.autoContinue === 'boolean' ? parsed.autoContinue : base.autoContinue,
+      defaultProvider: parsed.defaultProvider,
+      defaultModel: parsed.defaultModel,
+      autoApprove: typeof parsed.autoApprove === 'boolean' ? parsed.autoApprove : base.autoApprove,
+      customProviders: Array.isArray(parsed.customProviders) ? parsed.customProviders : undefined,
     };
   } catch {
     return base;

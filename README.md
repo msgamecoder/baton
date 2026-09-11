@@ -1,18 +1,17 @@
 # Baton
 
-**Pass the work between AI coding agents.**
+**Your own AI coding agent — two of them, in one terminal, handing work to each other.**
 
-Baton is a relay + launcher. Instead of copy-pasting between two agent CLIs, the agents
-hand work to each other: one finishes a piece, messages the other, the other picks it up —
-and you watch instead of relaying.
+Baton is not a wrapper around another CLI. It is its own agent: you pick a model provider,
+paste your API key, and talk to it. Install two of them side by side and they pass work
+back and forth instead of you relaying by hand.
 
-- **Bring your own agent and key.** Baton never holds a model or an API key. It launches
-  whatever CLI you point it at — Claude, OpenCode, Command Code, Kimi/Moonshot, DeepSeek,
-  anything.
-- **Two adapter tiers.** Any agent that can run a shell command can use `baton send` /
-  `baton inbox`. Agents that speak MCP get `baton-mcp` as native tools.
-- **Cross-platform.** Linux/macOS via tmux, Windows via Windows Terminal split panes,
-  WezTerm anywhere, with a built-in PTY fallback.
+- **No provider SDK, no other agent CLI.** Baton talks to the provider's HTTP API directly.
+- **Bring your own key.** Command Code, OpenCode Zen/Go, Claude, OpenAI, DeepSeek,
+  Kimi/Moonshot, Gemini, OpenRouter, Groq, xAI, Mistral, or a local Ollama/LM Studio.
+- **It can actually code** — read/write/edit files, glob, grep, run shell commands.
+- **Two sides, two setups.** Left pane and right pane can each use a different provider,
+  key and model.
 
 ## Install
 
@@ -20,172 +19,115 @@ Requires **Node.js >= 22.6** (Baton runs TypeScript directly — no build step, 
 dependencies).
 
 ```bash
-# from a checkout
-npm install -g .
-baton doctor          # check node + terminal support
-baton install         # install tmux (asks your package manager)
+npm install -g .          # from a checkout
+bash scripts/install.sh   # or: install + optional terminal multiplexer
 ```
 
-Or the one-shot installer (installs the CLI, then offers the panes):
+## First run
 
 ```bash
-bash scripts/install.sh
+baton
 ```
 
-Then **just run `baton`**. With no command it sets up (creates `~/.baton/config.json`,
-checks node and the terminal splitter), **installs what is missing**, and then **launches the
-daemon and your agents** in one go. Re-running `baton` attaches to what is already running
-instead of starting a second copy.
+1. It checks node and the terminal, and installs a multiplexer if you want panes
+   (**no sudo** — tmux is unpacked into `~/.baton/bin`).
+2. It lists providers, you pick one, paste your key, and it **fetches the model list from
+   that provider** so you choose from what you actually have.
+3. Then it launches: **left pane and right pane, both running Baton's own agent.**
+
+Re-running `baton` attaches to what is already running. `baton kill` stops everything.
+
+```
+baton                   set up + launch (--no-start, --yes, --force)
+baton chat              talk to the agent here (--agent, --provider, --model, --session)
+baton ask "…"           one-shot headless run (--yes to allow tools)
+```
+
+## Providers
 
 ```bash
-baton                 # set up + install what's missing + launch
-baton --no-start      # set up only
-baton --yes           # never prompt (auto-accept installs)
-baton up --dry-run    # preview the launch without running it
-baton kill            # stop everything
+baton providers                     # what is available, and whether a key is set
+baton key deepseek sk-…             # save a key (written to ~/.baton/keys.json, chmod 600)
+baton models --provider deepseek    # list models straight from the provider
+baton providers --json
 ```
 
-> The CLI itself must exist once before it can bootstrap the rest — that is the one
-> install line above. Everything after that, `baton` handles.
+| Provider | Wire format |
+|----------|-------------|
+| Command Code, Claude (Anthropic) | anthropic |
+| OpenCode Zen, OpenCode Go, OpenAI, DeepSeek, Kimi, Gemini, OpenRouter, Groq, xAI, Mistral | openai |
+| Ollama, LM Studio (local) | openai, no key |
+| Custom | you give the base URL + format |
 
-### Terminal multiplexer
+Keys live in `~/.baton/keys.json` (mode 600). Environment variables are honoured as a
+fallback (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …).
 
-`baton doctor` reports what this machine has; `baton install` installs one.
+## Slash commands
 
-| Platform | Splitter | Notes |
-|----------|----------|-------|
-| Linux / macOS | `tmux` | `baton install` runs apt/dnf/pacman/zypper/apk/brew for you |
-| Windows | `wt` | Windows Terminal is built into Windows 11; `winget install --id Microsoft.WindowsTerminal -e` otherwise |
-| Any | `wezterm` | used automatically if installed |
-| Any | `pty` | built-in fallback — agents run in the background, `baton logs <agent>` tails them |
-
-No multiplexer is required: the PTY fallback still relays. Install one for real split panes.
-
-## Quickstart
-
-```bash
-baton init
-baton up
-```
-
-From inside either agent (or a shell):
-
-```bash
-baton send --from cc --to oc --type handoff --summary "auth is done" --next "wire the UI"
-baton inbox
-```
-
-## Console (slash commands)
-
-```bash
-baton console
-```
-
-```
-baton> /status
-baton> /send oc handoff the API is ready
-baton> /model oc deepseek-chat
-baton> /inbox cc
-baton> /run cc "run the tests and report"
-baton> /quit
-```
+Inside `baton chat`:
 
 | Command | What it does |
 |---------|--------------|
-| `/help` | list commands |
-| `/status` `/agents` | who exists, what is pending |
-| `/send <to> [type] <text>` | send a message |
-| `/inbox [agent]` | read an inbox |
-| `/cmd <agent> <directive>` | send a control directive |
-| `/model <agent> <model>` | set that agent's launch model **and** notify it |
-| `/resume <agent>` | tell an agent to resume |
-| `/run <agent> <prompt>` | run that agent headlessly |
-| `/context` | print protocol + memory |
-| `/kill` | stop the daemon and every agent |
+| `/help` | list everything |
+| `/status` | agent, provider, model, key, session, tool policy |
+| `/model [name]` `/models` | show/switch the model, or list the provider's models |
+| `/provider [id]` `/key <p> <k>` | switch provider, save a key |
+| `/yes` | toggle auto-approve for tools |
+| `/clear` `/resume [id]` | conversation history |
+| `/remember <text>` `/context` | memory |
+| `/cost` | price the next request |
+| `/send <to> [type] <text>` `/inbox` | the relay to the other agent |
+| `/update` | update baton itself |
+| `/quit` | leave |
 
-Control directives (`baton cmd <agent> …`, or `baton commands`):
+## Tools
 
-`model=<name>` · `effort=<low\|medium\|high>` · `resume` · `think` · `stop` · `remember=<text>`
+`read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `shell`
 
-## Different model on the left and the right
+Writes and shell commands ask for confirmation unless you run with `--yes` or toggle
+`/yes`.
 
-Yes. Each agent is its own process with its own CLI and its own key, so each pane can run a
-different model. Set it per agent:
+## The two-agent relay
 
-```json
-{
-  "agents": [
-    { "name": "oc", "command": "opencode", "model": "deepseek/deepseek-chat" },
-    { "name": "cc", "command": "cmd",      "model": "claude-sonnet-4-6" }
-  ]
-}
+The second job. Two Baton agents (the two panes) hand work to each other over a local
+relay — append-only log, long-poll daemon, hop cap so nothing loops, MCP server for native
+tool access. See `adapters/AGENTS.md` for the protocol, and `baton console` for the relay
+control view.
+
+```bash
+baton console     # slash commands: /send /inbox /model /cmd /run /kill
+baton cmd <agent> model=deepseek-chat
+baton status / log / logs / kill
 ```
-
-Baton appends `<modelFlag> <model>` (default `--model`) when it launches that agent. Put
-your own flags straight in `command` if your CLI differs. Change it live with
-`/model oc deepseek-chat` — that updates the config and sends the agent a `model=` directive.
-
-## Commands
-
-| Command | What it does |
-|---------|--------------|
-| `init` / `doctor` / `install` | setup |
-| `up` / `down` / `kill` | launch / stop daemon / stop everything |
-| `console` | interactive slash-command console |
-| `send` / `cmd` / `inbox` / `ack` / `watch` | the relay |
-| `run <agent>` | headless run (`--model`, `--resume`, `--dry-run`) |
-| `daemon` / `mcp` | run `batond` / the MCP server |
-| `status` / `log` / `logs` / `audit` | observe |
-| `context` / `instructions` | protocol + memory for injection |
-| `remember` / `recall` / `forget` | memory across sessions |
-| `attach` / `media` | screenshots and files on messages |
-| `model` / `cost` | cheapest capable model, price a job |
-| `port` | the port that is actually serving |
-| `session` | reuse a logged-in browser session |
-| `splitters` | available terminal splitters |
 
 ## Config (`~/.baton/config.json`)
 
 ```json
 {
   "agents": [
-    { "name": "oc", "command": "opencode", "modelFlag": "--model",
-      "headless": "opencode run {prompt}" },
-    { "name": "cc", "command": "cmd", "modelFlag": "--model", "resumeFlag": "--continue",
-      "headless": "cmd -p {prompt}", "env": { "COMMANDCODE_API_KEY": "..." } }
+    { "name": "left",  "provider": "command-code", "model": "claude-sonnet-4-6" },
+    { "name": "right", "provider": "deepseek",     "model": "deepseek-chat" }
   ],
-  "splitter": "tmux",
+  "defaultProvider": "command-code",
+  "defaultModel": "claude-sonnet-4-6",
+  "autoApprove": false,
   "port": 7331,
-  "maxHop": 8,
-  "autoContinue": true
+  "maxHop": 8
 }
 ```
 
-`headless` is the template `baton run` uses: `{prompt}`, `{model}`, `{resume}`.
-Baton sets `BATON_AGENT=<name>` for each pane, so the agent always knows who it is.
-
-## MCP (native tools)
-
-```bash
-# Command Code
-cmd mcp add --scope user --env BATON_AGENT=cc baton -- node "$HOME/baton/src/cli/index.ts" mcp
-
-# OpenCode (interactive picker; choose local/stdio, then the command above)
-opencode mcp add baton
-```
-
-Exposes `relay_send`, `relay_inbox`, `relay_ack`, `relay_status`, `relay_remember`,
-`relay_context`. Give each agent its own registration with its own `BATON_AGENT`.
+An agent with no `command` runs Baton's own agent. An agent with a `command` launches that
+CLI instead — so you can still point a pane at any external tool if you want.
 
 ## Status
 
-Implemented and tested: relay + log, daemon, launcher, MCP server, memory, attachments,
-cost router, port probe, session store, audit, guardrails, console with slash commands,
-per-agent models, npm install.
+Working: own agent (OpenAI + Anthropic wire formats), streaming, tool loop, provider
+registry, key store, model fetching, provider wizard, tmux/Windows Terminal/WezTerm/PTY
+launcher, relay (log + daemon + MCP), memory, attachments, cost router, port probe,
+guardrails.
 
-Not yet built: a mod/plugin that injects a peer message into a **live, idle** agent's TUI
-automatically. Today the agent picks up messages with `baton inbox` / `relay_inbox` at the
-end of a turn — see `adapters/AGENTS.md`.
+Not yet: a full-screen TUI (the chat is line-based), a `/` command palette popup, and
+`/update` needs the package published to npm.
 
 ## License
 

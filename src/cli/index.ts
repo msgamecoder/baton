@@ -45,6 +45,11 @@ import { audit, readAudit } from '../core/audit.ts';
 import { protocolText } from '../core/instructions.ts';
 import { doctorReport, installTmuxUser, runInstall, userInstallAvailable } from '../core/doctor.ts';
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
+import { startChat } from '../agent/chat.ts';
+import { buildSystemPrompt, runTurn } from '../agent/loop.ts';
+import { allProviders, getProvider, type CustomProviderDef, type Provider } from '../providers/registry.ts';
+import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
+import { listModels } from '../providers/client.ts';
 
 type FlagValue = string | boolean | string[];
 type Flags = Record<string, FlagValue>;
@@ -117,6 +122,46 @@ function confirm(question: string): Promise<boolean> {
       rl.close();
       resolve(/^y(es)?$/i.test(answer.trim()));
     });
+  });
+}
+
+function askLine(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+function askHidden(question: string): Promise<string> {
+  if (!process.stdin.isTTY) return askLine(question);
+  return new Promise((resolve) => {
+    process.stdout.write(question);
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+    let value = '';
+    const onData = (chunk: Buffer) => {
+      for (const ch of chunk.toString('utf8')) {
+        if (ch === '\r' || ch === '\n') {
+          stdin.setRawMode(wasRaw ?? false);
+          stdin.removeListener('data', onData);
+          process.stdout.write('\n');
+          resolve(value);
+          return;
+        }
+        if (ch === '\u0003') process.exit(130);
+        if (ch === '\u007f') {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += ch;
+      }
+    };
+    stdin.on('data', onData);
   });
 }
 
@@ -867,6 +912,16 @@ async function cmdWelcome(flags: Flags): Promise<void> {
     return;
   }
 
+  if (!loadConfig().defaultProvider) {
+    if (!interactive && !auto) {
+      console.log('\nno provider configured yet — run `baton` in a terminal to pick one');
+      return;
+    }
+    console.log('\nno provider set up yet — let\'s do that now\n');
+    await runWizard();
+    console.log('');
+  }
+
   if (!panesOk && !bool(flags, 'force') && !bool(flags, 'dry-run')) {
     console.log('\nnot starting — without panes there is no interface to use.');
     console.log('  baton install     install tmux (no sudo), then run `baton` again');
@@ -877,6 +932,214 @@ async function cmdWelcome(flags: Flags): Promise<void> {
 
   console.log('\nstarting baton...\n');
   await cmdUp(flags);
+}
+
+function resolveChat(flags: Flags): {
+  agent: string;
+  provider: Provider;
+  model: string;
+  apiKey?: string;
+  autoApprove: boolean;
+} {
+  const config = loadConfig();
+  const agentName = str(flags, 'agent') || process.env.BATON_AGENT || config.agents[0]?.name || 'agent';
+  const agent = config.agents.find((a) => a.name === agentName) ?? { name: agentName };
+  const providerId = str(flags, 'provider') ?? agent.provider ?? config.defaultProvider;
+  if (!providerId) throw new BatonError('no provider set up yet — run `baton` and pick one');
+  const provider = getProvider(providerId, config.customProviders);
+  if (!provider) throw new BatonError(`unknown provider: ${providerId}`);
+  const model = str(flags, 'model') ?? agent.model ?? config.defaultModel;
+  if (!model) throw new BatonError('no model selected — pass --model or run `baton` to choose one');
+  const apiKey = resolveKey(provider);
+  if (provider.needsKey && !apiKey) {
+    throw new BatonError(`no API key for ${provider.name} — run \`baton key ${provider.id} <key>\``);
+  }
+  return {
+    agent: agentName,
+    provider,
+    model,
+    apiKey,
+    autoApprove: bool(flags, 'yes') || config.autoApprove === true,
+  };
+}
+
+async function cmdChat(flags: Flags): Promise<void> {
+  const context = resolveChat(flags);
+  await startChat({
+    agent: context.agent,
+    provider: context.provider,
+    model: context.model,
+    apiKey: context.apiKey,
+    cwd: process.cwd(),
+    autoApprove: context.autoApprove,
+    session: str(flags, 'session'),
+  });
+}
+
+async function cmdAsk(flags: Flags, positional: string[]): Promise<void> {
+  const inline = positional.join(' ').trim();
+  const prompt = inline || str(flags, 'prompt') || (process.stdin.isTTY ? '' : (await readStdin()).trim());
+  if (!prompt) throw new BatonError('usage: baton ask "<prompt>"');
+
+  const context = resolveChat(flags);
+  const config = loadConfig();
+  const confirmTool = async (): Promise<boolean> => bool(flags, 'yes') || config.autoApprove === true;
+
+  const messages = [
+    { role: 'system' as const, content: buildSystemPrompt(process.cwd(), `${protocolText()}\n${memoryBlock()}`) },
+    { role: 'user' as const, content: prompt },
+  ];
+
+  await runTurn(messages, {
+    provider: context.provider,
+    apiKey: context.apiKey,
+    model: context.model,
+    cwd: process.cwd(),
+    confirm: confirmTool,
+    maxTurns: str(flags, 'max-turns') ? Number(str(flags, 'max-turns')) : 20,
+    events: {
+      onText: (chunk) => process.stdout.write(chunk),
+      onToolStart: (call) => process.stderr.write(`→ ${call.name}\n`),
+    },
+  });
+  process.stdout.write('\n');
+}
+
+function cmdProviders(flags: Flags): void {
+  const config = loadConfig();
+  const list = allProviders(config.customProviders);
+  if (bool(flags, 'json')) {
+    console.log(
+      JSON.stringify(
+        list.map((p) => ({
+          id: p.id,
+          name: p.name,
+          format: p.format,
+          needsKey: p.needsKey,
+          hasKey: Boolean(resolveKey(p)),
+        })),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  for (const provider of list) {
+    const status = provider.needsKey ? (resolveKey(provider) ? 'key set' : '-') : 'none needed';
+    console.log(`${provider.id.padEnd(13)} ${provider.name.padEnd(34)} ${provider.format.padEnd(10)} ${status}`);
+  }
+  console.log(`\nkeys: ${keysFile()}`);
+}
+
+function cmdKey(positional: string[], flags: Flags): void {
+  const id = positional[0] ?? str(flags, 'provider');
+  const key = positional.slice(1).join(' ') || str(flags, 'key');
+  if (!id || !key) throw new BatonError('usage: baton key <provider> <api-key>');
+  const config = loadConfig();
+  const provider = getProvider(id, config.customProviders);
+  if (!provider) throw new BatonError(`unknown provider: ${id}`);
+  saveKey(provider.id, key);
+  console.log(`saved key for ${provider.name} in ${keysFile()}`);
+}
+
+async function cmdModels(flags: Flags): Promise<void> {
+  const config = loadConfig();
+  const providerId = str(flags, 'provider') ?? config.defaultProvider;
+  if (!providerId) throw new BatonError('no provider — pass --provider or run `baton`');
+  const provider = getProvider(providerId, config.customProviders);
+  if (!provider) throw new BatonError(`unknown provider: ${providerId}`);
+  try {
+    const models = await listModels(provider, resolveKey(provider));
+    if (models.length === 0) console.log('(provider returned no models)');
+    for (const model of models) console.log(model);
+  } catch (error) {
+    console.log(`could not fetch models: ${error instanceof Error ? error.message : 'failed'}`);
+    for (const model of provider.defaultModels) console.log(`${model}   # built-in fallback`);
+  }
+}
+
+async function configureProvider(
+  config: ReturnType<typeof loadConfig>,
+): Promise<{ providerId: string; model: string }> {
+  const list = allProviders(config.customProviders);
+
+  console.log('providers:\n');
+  list.forEach((provider, index) => {
+    const suffix = provider.needsKey ? '' : '  (no key needed)';
+    console.log(`  ${String(index + 1).padStart(2)}. ${provider.name}${suffix}`);
+  });
+
+  const answer = (await askLine('\nprovider number or id: ')).trim();
+  let provider = /^\d+$/.test(answer) ? list[Number(answer) - 1] : getProvider(answer, config.customProviders);
+  if (!provider) throw new BatonError('no such provider');
+
+  if (provider.id === 'custom') {
+    const baseUrl = (await askLine('base URL (e.g. https://api.example.com/v1): ')).trim();
+    const format = ((await askLine('wire format — openai or anthropic [openai]: ')).trim() || 'openai') === 'anthropic' ? 'anthropic' : 'openai';
+    const id = (await askLine('short id for it: ')).trim() || 'custom';
+    const def: CustomProviderDef = { id, name: `${id} (custom)`, format, baseUrl };
+    config.customProviders = [...(config.customProviders ?? []), def];
+    provider = getProvider(id, config.customProviders);
+    if (!provider) throw new BatonError('custom provider could not be created');
+  }
+
+  if (provider.needsKey && !resolveKey(provider)) {
+    if (provider.keyUrl) console.log(`\ncreate a key at ${provider.keyUrl}`);
+    const key = (await askHidden(`paste your ${provider.name} API key: `)).trim();
+    if (key) {
+      saveKey(provider.id, key);
+      console.log(`saved to ${keysFile()}`);
+    } else {
+      console.log('no key entered — you can add one later with `baton key`');
+    }
+  }
+
+  let models: string[] = [];
+  try {
+    models = await listModels(provider, resolveKey(provider));
+  } catch {
+    models = [];
+  }
+  if (models.length === 0) models = provider.defaultModels;
+
+  let model: string;
+  if (models.length === 0) {
+    model = (await askLine('model name: ')).trim();
+  } else {
+    console.log('\nmodels:\n');
+    models.slice(0, 40).forEach((name, index) => console.log(`  ${String(index + 1).padStart(2)}. ${name}`));
+    const picked = (await askLine('\nmodel number or name: ')).trim();
+    model = /^\d+$/.test(picked) ? (models[Number(picked) - 1] ?? models[0]) : picked || models[0];
+  }
+  if (!model) throw new BatonError('no model selected');
+
+  return { providerId: provider.id, model };
+}
+
+async function runWizard(): Promise<void> {
+  const config = loadConfig();
+  const first = await configureProvider(config);
+
+  config.defaultProvider = first.providerId;
+  config.defaultModel = first.model;
+  const leftName = config.agents[0]?.name || 'left';
+  config.agents[0] = { name: leftName, provider: first.providerId, model: first.model };
+  if (!config.agents[1]) config.agents[1] = { name: 'right' };
+  saveConfig(config);
+
+  console.log(`\nleft  : ${first.providerId} · ${first.model}`);
+
+  if (await confirm('give the right side a different provider/model? [y/N] ')) {
+    const second = await configureProvider(config);
+    config.agents[1] = { name: config.agents[1].name || 'right', provider: second.providerId, model: second.model };
+    saveConfig(config);
+    console.log(`right : ${second.providerId} · ${second.model}`);
+  } else {
+    config.agents[1] = { name: config.agents[1].name || 'right', provider: first.providerId, model: first.model };
+    saveConfig(config);
+    console.log('right : same as left');
+  }
+  console.log(`\nsaved ${CONFIG_PATH}`);
 }
 
 function usage(): void {
@@ -893,9 +1156,14 @@ setup
   install [--system]         install tmux (no sudo by default, into ~/.baton/bin)
   up / down / kill           launch agents + daemon / stop daemon / stop everything
   splitters                  show available terminal splitters
+  providers                  list model providers and whether a key is set
+  key <provider> <api-key>   save a provider API key (~/.baton/keys.json, chmod 600)
+  models [--provider id]     list the models a provider offers
 
-relay
-  console                    interactive console with slash commands (/help)
+your agent (baton's own CLI)
+  chat [--agent name]        talk to Baton's own agent (--provider, --model, --session)
+  ask "<prompt>"             one-shot, non-interactive (--yes to allow tools)
+  console                    relay console with slash commands (/help)
   send                       send a message to another agent
   cmd <agent> <directive>    send a control directive (model=…, resume, stop, …)
   commands                   list control directives
@@ -972,6 +1240,21 @@ async function main(): Promise<void> {
     }
     case 'console':
       await cmdConsole(flags);
+      break;
+    case 'chat':
+      await cmdChat(flags);
+      break;
+    case 'ask':
+      await cmdAsk(flags, positional);
+      break;
+    case 'providers':
+      cmdProviders(flags);
+      break;
+    case 'key':
+      cmdKey(positional, flags);
+      break;
+    case 'models':
+      await cmdModels(flags);
       break;
     case 'send':
       await cmdSend(flags);

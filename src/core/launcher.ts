@@ -22,7 +22,15 @@ export interface StartedAgent {
 
 const PIDS_PATH = join(AGENTS_DIR, 'pids.json');
 
+function batonAgentCommand(agent: AgentConfig): string {
+  const args = ['chat', '--agent', agent.name];
+  if (agent.provider) args.push('--provider', agent.provider);
+  if (agent.model) args.push('--model', agent.model);
+  return `${process.execPath} ${process.argv[1]} ${args.join(' ')}`;
+}
+
 function paneCommand(agent: AgentConfig): string {
+  if (!agent.command) return `BATON_AGENT=${agent.name} ${batonAgentCommand(agent)}`;
   const model = agent.model ? ` ${agent.modelFlag ?? '--model'} ${agent.model}` : '';
   return `BATON_AGENT=${agent.name} ${agent.command}${model}`;
 }
