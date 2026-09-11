@@ -35,7 +35,7 @@ import {
   tmuxAttach,
   tmuxSessionExists,
 } from '../core/launcher.ts';
-import { detectSplitters, pickSplitter } from '../core/splitter.ts';
+import { detectSplitters, pickSplitter, tmuxBin } from '../core/splitter.ts';
 import { allMemory, forget, memoryBlock, recall, remember } from '../core/memory.ts';
 import { humanSize, listMedia, storeFile } from '../core/media.ts';
 import { cheapestFor, cost, loadPrices, tierForTask, type Tier } from '../core/cost.ts';
@@ -502,6 +502,10 @@ async function cmdDown(): Promise<void> {
 }
 
 async function cmdKill(): Promise<void> {
+  if (tmuxSessionExists()) {
+    spawnSync(tmuxBin(), ['kill-session', '-t', 'baton'], { stdio: 'ignore' });
+    console.log('closed the baton tmux session');
+  }
   const stopped = stopAgents();
   await cmdDown();
   console.log(`stopped ${stopped} agent(s) — baton is halted`);
