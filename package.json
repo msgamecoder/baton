@@ -1,0 +1,25 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "Pass the work between AI coding agents. A relay + launcher for any agent CLI.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "baton": "./src/cli/index.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "baton": "node src/cli/index.ts",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "relay",
+    "mcp",
+    "cli",
+    "multi-agent"
+  ]
+}

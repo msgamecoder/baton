@@ -1,0 +1,682 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
+import { configExists, defaultConfig, loadConfig, saveConfig } from '../core/config.ts';
+import {
+  appendMessage,
+  ensureHome,
+  getCursor,
+  inbox,
+  pendingCount,
+  readMessages,
+  setCursor,
+  tail,
+} from '../core/store.ts';
+import {
+  BatonError,
+  checkLoop,
+  validateMessage,
+  type Message,
+  type MessageType,
+  type Priority,
+} from '../core/schema.ts';
+import { daemonUp, remoteAck, remoteInbox, remoteSend, remoteStatus } from '../core/client.ts';
+import { buildUpPlan, spawnBackground, stopAgents } from '../core/launcher.ts';
+import { detectSplitters, pickSplitter } from '../core/splitter.ts';
+import { allMemory, forget, memoryBlock, recall, remember } from '../core/memory.ts';
+import { humanSize, listMedia, storeFile } from '../core/media.ts';
+import { cheapestFor, cost, loadPrices, tierForTask, type Tier } from '../core/cost.ts';
+import { detectPorts } from '../core/probe.ts';
+import { listSessions, saveSession, sessionPath, sessionPreview } from '../core/session.ts';
+import { audit, readAudit } from '../core/audit.ts';
+import { protocolText } from '../core/instructions.ts';
+
+type FlagValue = string | boolean | string[];
+type Flags = Record<string, FlagValue>;
+
+const DAEMON_PID_PATH = join(BATON_HOME, 'daemon.pid');
+
+function parseArgs(argv: string[]): { flags: Flags; positional: string[] } {
+  const flags: Flags = {};
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        const existing = flags[key];
+        if (existing === undefined) flags[key] = next;
+        else if (Array.isArray(existing)) existing.push(next);
+        else flags[key] = [existing, next];
+        i++;
+      } else {
+        const existing = flags[key];
+        if (existing === undefined) flags[key] = true;
+        else if (Array.isArray(existing)) existing.push(true);
+        else flags[key] = [existing, true];
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { flags, positional };
+}
+
+function str(flags: Flags, key: string): string | undefined {
+  const value = flags[key];
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    for (let i = value.length - 1; i >= 0; i--) {
+      const item = value[i];
+      if (typeof item === 'string') return item;
+    }
+  }
+  return undefined;
+}
+
+function list(flags: Flags, key: string): string[] | undefined {
+  const value = flags[key];
+  if (value === undefined || typeof value === 'boolean') return undefined;
+  return Array.isArray(value) ? value : [value];
+}
+
+function bool(flags: Flags, key: string): boolean {
+  const value = flags[key];
+  return value === true || value === 'true';
+}
+
+function requireSender(flags: Flags): string {
+  const from = str(flags, 'from') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  if (!from) throw new BatonError('no sender (use --from, set BATON_AGENT, or run `baton init`)');
+  return from;
+}
+
+function requireAgent(flags: Flags): string {
+  const agent = str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  if (!agent) throw new BatonError('no agent (use --agent, set BATON_AGENT, or run `baton init`)');
+  return agent;
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatMessage(m: Message): string {
+  const time = new Date(m.ts).toISOString().slice(11, 19);
+  const lines = [`[${time}] ${m.from} -> ${m.to}  ${m.type} (${m.priority})  ${m.id}`, `    ${m.summary}`];
+  if (m.body) lines.push(m.body.split('\n').map((l) => '    ' + l).join('\n'));
+  if (m.next?.length) lines.push(`    next: ${m.next.join(' | ')}`);
+  if (m.built?.length) lines.push(`    built: ${m.built.map((b) => b.path).join(', ')}`);
+  if (m.errors?.length) lines.push(`    errors: ${m.errors.map((e) => e.message).join(' | ')}`);
+  if (m.attachments?.length) lines.push(`    attachments: ${m.attachments.map((a) => a.path).join(', ')}`);
+  if (m.hop) lines.push(`    hop: ${m.hop}`);
+  return lines.join('\n');
+}
+
+function printMessages(messages: Message[], asJson: boolean): void {
+  if (asJson) {
+    for (const m of messages) console.log(JSON.stringify(m));
+    return;
+  }
+  for (const m of messages) console.log(formatMessage(m));
+}
+
+async function resolveInput(flags: Flags): Promise<unknown> {
+  const inputArg = str(flags, 'input');
+  if (inputArg === undefined) return undefined;
+  let raw: string;
+  if (inputArg === '-') raw = await readStdin();
+  else if (inputArg.startsWith('@')) raw = readFileSync(inputArg.slice(1), 'utf8');
+  else raw = inputArg;
+  return JSON.parse(raw);
+}
+
+async function collectInbox(agent: string, waitMs: number, peek: boolean): Promise<Message[]> {
+  if (await daemonUp()) {
+    const remote = await remoteInbox(agent, waitMs, peek);
+    if (remote) return remote;
+  }
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const messages = inbox(agent, getCursor(agent));
+    if (messages.length > 0 || Date.now() >= deadline) {
+      if (messages.length > 0 && !peek) {
+        const last = messages[messages.length - 1];
+        setCursor(agent, { ts: last.ts, id: last.id });
+      }
+      return messages;
+    }
+    await sleep(400);
+  }
+}
+
+async function cmdSend(flags: Flags): Promise<void> {
+  const raw = await resolveInput(flags);
+  let message: Message;
+
+  if (raw !== undefined) {
+    message = validateMessage(raw);
+  } else {
+    const to = str(flags, 'to');
+    const summary = str(flags, 'summary');
+    if (!to) throw new BatonError('send needs --to');
+    if (!summary) throw new BatonError('send needs --summary (or pass --input)');
+
+    message = validateMessage({
+      from: requireSender(flags),
+      to,
+      type: (str(flags, 'type') as MessageType) ?? 'fyi',
+      priority: (str(flags, 'priority') as Priority) ?? 'normal',
+      summary,
+      body: str(flags, 'body'),
+      next: list(flags, 'next'),
+      built: list(flags, 'built')?.map((path) => ({ path })),
+      replyRequired: bool(flags, 'reply-required') ? true : undefined,
+      inReplyTo: str(flags, 'in-reply-to'),
+      hop: str(flags, 'hop') ? Number(str(flags, 'hop')) : 0,
+      autoContinue: str(flags, 'auto-continue') === 'false' ? false : undefined,
+      sessionRef: str(flags, 'session'),
+    });
+  }
+
+  if (message.attachments) {
+    message.attachments = message.attachments.map((a) => (existsSync(a.path) ? storeFile(a.path) : a));
+  }
+
+  checkLoop(message, loadConfig().maxHop);
+
+  let stored = message;
+  if (await daemonUp()) {
+    const sent = await remoteSend(message);
+    if (sent) stored = sent;
+    else appendMessage(message);
+  } else {
+    appendMessage(message);
+  }
+
+  audit('send', stored.from, `${stored.to}:${stored.type}`);
+  if (bool(flags, 'json')) console.log(JSON.stringify(stored));
+  else console.log(`${stored.id}  ${stored.from} -> ${stored.to}  ${stored.type}`);
+}
+
+async function cmdInbox(flags: Flags): Promise<void> {
+  const agent = requireAgent(flags);
+  const waitMs = str(flags, 'wait') ? Number(str(flags, 'wait')) : 0;
+  const messages = await collectInbox(agent, waitMs, bool(flags, 'peek'));
+  printMessages(messages, bool(flags, 'json'));
+}
+
+async function cmdAck(flags: Flags, positional: string[]): Promise<void> {
+  const agent = requireAgent(flags);
+  const id = positional[0] ?? str(flags, 'id');
+
+  if (await daemonUp()) {
+    const ok = await remoteAck(agent, id);
+    if (ok) {
+      console.log(id ? `acked ${agent} up to ${id}` : `acked ${agent}`);
+      return;
+    }
+  }
+
+  if (id) {
+    const found = readMessages().find((m) => m.id === id);
+    if (!found) throw new BatonError(`no message with id ${id}`);
+    setCursor(agent, { ts: found.ts, id: found.id });
+    console.log(`acked ${agent} up to ${id}`);
+    return;
+  }
+  const messages = inbox(agent, getCursor(agent));
+  const last = messages[messages.length - 1];
+  if (last) setCursor(agent, { ts: last.ts, id: last.id });
+  console.log(`${agent}: ${messages.length ? `acked ${messages.length}` : 'nothing to ack'}`);
+}
+
+async function cmdStatus(flags: Flags): Promise<void> {
+  const config = loadConfig();
+  const messages = readMessages();
+  const live = await daemonUp();
+  const splitter = pickSplitter(config.splitter);
+
+  if (bool(flags, 'json')) {
+    console.log(
+      JSON.stringify({
+        home: BATON_HOME,
+        daemon: live ? `up :${config.port}` : 'down',
+        splitter: splitter.name,
+        total: messages.length,
+        agents: config.agents.map((a) => ({ name: a.name, command: a.command, pending: pendingCount(a.name) })),
+        memory: allMemory().length,
+      }),
+    );
+    return;
+  }
+
+  console.log(`baton home : ${BATON_HOME}`);
+  console.log(`daemon     : ${live ? `up on :${config.port}` : 'down (files-only mode)'}`);
+  console.log(`splitter   : ${splitter.name} — ${splitter.note}`);
+  console.log(`messages   : ${messages.length}`);
+  console.log(`memory     : ${allMemory().length} entries`);
+  console.log('agents:');
+  for (const agent of config.agents) {
+    console.log(`  ${agent.name.padEnd(10)} ${agent.command.padEnd(14)} pending: ${pendingCount(agent.name)}`);
+  }
+  const last = messages[messages.length - 1];
+  if (last) console.log(`last       : ${new Date(last.ts).toISOString()}  ${last.from} -> ${last.to}  ${last.summary}`);
+}
+
+async function cmdWatch(flags: Flags): Promise<void> {
+  const agent = requireAgent(flags);
+  console.log(`watching inbox for ${agent} (ctrl-c to stop)`);
+  for (;;) {
+    const messages = await collectInbox(agent, 5000, false);
+    if (messages.length > 0) printMessages(messages, bool(flags, 'json'));
+  }
+}
+
+function cmdSplitters(flags: Flags): void {
+  const all = detectSplitters();
+  const chosen = pickSplitter(str(flags, 'prefer') ?? loadConfig().splitter);
+  if (bool(flags, 'json')) {
+    console.log(JSON.stringify({ chosen: chosen.name, available: all }, null, 2));
+    return;
+  }
+  console.log(`chosen: ${chosen.name} (${chosen.note})`);
+  for (const s of all) console.log(`  ${s.available ? 'x' : ' '} ${s.name.padEnd(9)} ${s.note}`);
+}
+
+function cmdInit(flags: Flags): void {
+  ensureHome();
+  if (configExists() && !bool(flags, 'force')) {
+    console.log(`config already exists: ${CONFIG_PATH} (use --force to overwrite)`);
+  } else {
+    saveConfig(defaultConfig());
+    console.log(`wrote ${CONFIG_PATH}`);
+  }
+  console.log(`log  : ${LOG_PATH}`);
+  console.log('next : baton send --from cc --to oc --type handoff --summary "hello"');
+}
+
+function cmdLog(flags: Flags): void {
+  const n = str(flags, 'n') ? Number(str(flags, 'n')) : 20;
+  printMessages(tail(n), bool(flags, 'json'));
+}
+
+function startDaemonDetached(): void {
+  const script = process.argv[1];
+  if (!script) throw new BatonError('cannot locate CLI entry to start the daemon');
+  const child = spawn(process.execPath, [script, 'daemon'], { detached: true, stdio: 'ignore' });
+  child.unref();
+  if (child.pid) writeFileSync(DAEMON_PID_PATH, String(child.pid));
+}
+
+async function cmdUp(flags: Flags): Promise<void> {
+  const config = loadConfig();
+  const plan = buildUpPlan(config);
+
+  if (bool(flags, 'dry-run')) {
+    console.log(`splitter: ${plan.splitter} — ${plan.note}`);
+    for (const command of plan.commands) console.log(`  ${command}`);
+    return;
+  }
+
+  if (!(await daemonUp())) {
+    startDaemonDetached();
+    await sleep(600);
+  }
+
+  if (plan.background) {
+    const started = spawnBackground(config);
+    for (const agent of started) {
+      console.log(`started ${agent.name} (pid ${agent.pid ?? '?'}) -> ${agent.log}`);
+    }
+    console.log(`daemon: ${(await daemonUp()) ? 'up' : 'down'} on :${config.port}`);
+    console.log('watch logs: baton logs <agent>   stop: baton kill');
+    return;
+  }
+
+  console.log(`splitter: ${plan.splitter} — ${plan.note}`);
+  for (const command of plan.commands) {
+    const result = spawnSync(command, { shell: true, stdio: 'inherit' });
+    if (result.status !== 0 && result.status !== null) console.log(`(${plan.splitter} exited ${result.status})`);
+  }
+}
+
+async function cmdDown(): Promise<void> {
+  if (existsSync(DAEMON_PID_PATH)) {
+    const pid = Number(readFileSync(DAEMON_PID_PATH, 'utf8').trim());
+    if (pid) {
+      try {
+        process.kill(pid, 'SIGTERM');
+        console.log(`stopped daemon (pid ${pid})`);
+      } catch {
+        console.log('daemon was not running');
+      }
+    }
+    unlinkSync(DAEMON_PID_PATH);
+  } else {
+    console.log('no daemon pid recorded');
+  }
+}
+
+async function cmdKill(): Promise<void> {
+  const stopped = stopAgents();
+  await cmdDown();
+  console.log(`stopped ${stopped} agent(s) — baton is halted`);
+}
+
+function cmdLogs(positional: string[]): void {
+  const agents = loadConfig().agents.map((a) => a.name);
+  const target = positional[0];
+  const names = target ? [target] : agents;
+  for (const name of names) {
+    const path = join(BATON_HOME, 'agents', `${name}.log`);
+    if (!existsSync(path)) {
+      console.log(`${name}: no log (${path})`);
+      continue;
+    }
+    console.log(`--- ${name} ---`);
+    console.log(readFileSync(path, 'utf8').split('\n').slice(-40).join('\n'));
+  }
+}
+
+function cmdMemory(action: string | undefined, flags: Flags, positional: string[]): void {
+  const text = positional.join(' ').trim();
+
+  if (action === 'remember' || action === 'add') {
+    if (!text) throw new BatonError('remember needs text: baton remember "keep this"');
+    const entry = remember(text, str(flags, 'source'));
+    console.log(`remembered ${entry.id}`);
+    return;
+  }
+  if (action === 'forget') {
+    const count = forget(text || undefined);
+    console.log(text ? `forgot ${count} entr(ies) matching "${text}"` : `cleared ${count} entr(ies)`);
+    return;
+  }
+  const entries = recall(text || undefined);
+  if (bool(flags, 'json')) {
+    console.log(JSON.stringify(entries, null, 2));
+    return;
+  }
+  if (entries.length === 0) console.log('(no memory)');
+  for (const entry of entries) console.log(`${entry.id}  ${entry.text}`);
+}
+
+function cmdAttach(positional: string[], flags: Flags): void {
+  const path = positional[0];
+  if (!path) throw new BatonError('attach needs a file path');
+  if (!existsSync(path)) throw new BatonError(`no such file: ${path}`);
+  const attachment = storeFile(path);
+  if (bool(flags, 'json')) console.log(JSON.stringify(attachment));
+  else console.log(`${attachment.path}  (${humanSize(attachment.size ?? 0)}, ${attachment.mime}, ${attachment.hash})`);
+}
+
+function cmdMedia(flags: Flags): void {
+  const items = listMedia();
+  if (bool(flags, 'json')) {
+    console.log(JSON.stringify(items, null, 2));
+    return;
+  }
+  if (items.length === 0) console.log('(no media)');
+  for (const item of items) console.log(`${humanSize(item.size ?? 0).padStart(9)}  ${item.mime?.padEnd(24)}  ${item.path}`);
+}
+
+function cmdModel(flags: Flags): void {
+  const hint = str(flags, 'for') ?? '';
+  const tier = (str(flags, 'tier') as Tier) ?? tierForTask(hint);
+  const inputTokens = Number(str(flags, 'in') ?? '2000');
+  const outputTokens = Number(str(flags, 'out') ?? '800');
+  const { model, usd } = cheapestFor(tier, inputTokens, outputTokens);
+
+  if (bool(flags, 'json')) {
+    console.log(JSON.stringify({ tier, hint, model, estimatedUsd: usd }, null, 2));
+    return;
+  }
+  console.log(`task   : ${hint || '(none)'} -> tier ${tier}`);
+  console.log(`model  : ${model.id}  (${model.provider}, tier ${model.tier})`);
+  console.log(`price  : $${model.in}/M in, $${model.out}/M out`);
+  console.log(`estimate: ~$${usd.toFixed(4)} for ${inputTokens} in + ${outputTokens} out tokens`);
+  console.log('(edit ~/.baton/prices.json to match your providers)');
+}
+
+function cmdCost(flags: Flags): void {
+  const models = loadPrices();
+  const id = str(flags, 'model');
+  const inputTokens = Number(str(flags, 'in') ?? '0');
+  const outputTokens = Number(str(flags, 'out') ?? '0');
+
+  if (id) {
+    const model = models.find((m) => m.id === id);
+    if (!model) throw new BatonError(`unknown model: ${id}`);
+    console.log(`$${cost(model, inputTokens, outputTokens).toFixed(4)}`);
+    return;
+  }
+
+  const rows = models
+    .map((m) => ({ model: m, usd: cost(m, inputTokens, outputTokens) }))
+    .sort((a, b) => a.usd - b.usd);
+  for (const row of rows) {
+    console.log(`${row.usd.toFixed(4)}  ${row.model.tier.padEnd(7)} ${row.model.id}`);
+  }
+}
+
+async function cmdPort(flags: Flags): Promise<void> {
+  const cwd = str(flags, 'dir') ?? process.cwd();
+  const { hints, results } = await detectPorts(cwd);
+
+  if (bool(flags, 'json')) {
+    console.log(JSON.stringify({ hints, results }, null, 2));
+    return;
+  }
+  if (hints.length > 0) {
+    console.log('hints from the project:');
+    for (const hint of hints) console.log(`  ${hint.port}  (${hint.source})`);
+  }
+  const useful = results.filter((r) => r.project || r.hinted || (r.reachable && r.looksLikeApp));
+  console.log('candidates that look like an app:');
+  for (const result of useful.slice(0, 10)) {
+    const tag = result.project ? '[this project] ' : result.hinted ? '[project hint] ' : '';
+    console.log(`  ${String(result.port).padEnd(6)} ${tag}up (HTTP ${result.status}, ${result.contentType || 'unknown'})`);
+  }
+  const live = useful.find((r) => r.project) ?? useful.find((r) => r.hinted) ?? useful[0];
+  if (live) console.log(`\nuse this one: http://127.0.0.1:${live.port}/`);
+  else console.log('\nnothing that looks like your app is serving — start the project dev server first');
+}
+
+function cmdSession(action: string | undefined, positional: string[], flags: Flags): void {
+  if (action === 'save') {
+    const name = positional[0];
+    const file = positional[1] ?? str(flags, 'from');
+    if (!name || !file) throw new BatonError('session save <name> <file.json>');
+    console.log(`saved ${name} -> ${saveSession(name, file)}`);
+    return;
+  }
+  if (action === 'show' || action === 'get') {
+    const name = positional[0];
+    if (!name) throw new BatonError('session show <name>');
+    const path = sessionPath(name);
+    if (!path) throw new BatonError(`no session named ${name}`);
+    console.log(path);
+    return;
+  }
+  const names = listSessions();
+  if (names.length === 0) {
+    console.log('(no saved sessions)');
+    return;
+  }
+  for (const name of names) {
+    const preview = (sessionPreview(name) ?? '').replace(/\s+/g, ' ').slice(0, 80);
+    console.log(`${name.padEnd(18)} ${preview}`);
+  }
+}
+
+function cmdAudit(flags: Flags): void {
+  const entries = readAudit(str(flags, 'n') ? Number(str(flags, 'n')) : 50);
+  for (const entry of entries) {
+    console.log(`${new Date(entry.ts).toISOString()}  ${entry.event.padEnd(10)} ${(entry.agent ?? '').padEnd(8)} ${entry.detail ?? ''}`);
+  }
+}
+
+function cmdContext(): void {
+  console.log(protocolText());
+  const block = memoryBlock();
+  if (block) console.log(block);
+}
+
+function usage(): void {
+  console.log(`baton — pass the work between AI coding agents
+
+usage: baton <command> [options]
+
+relay
+  init                       create ~/.baton and a starter config
+  up                         launch the agents and the daemon (--dry-run to preview)
+  down                       stop the daemon
+  kill                       stop the daemon and every agent
+  daemon                     run batond in the foreground
+  mcp                        run the MCP server on stdio
+  send                       send a message to another agent
+  inbox                      read your inbox (marks read unless --peek)
+  ack [id]                   acknowledge up to a message (or all)
+  watch                      stream new messages
+  status                     agents, pending counts, chosen splitter
+  log                        show the last messages (--n 20)
+  logs [agent]               tail background agent logs
+  splitters                  show available terminal splitters
+
+agent quality
+  context                    print the protocol + saved memory (inject at session start)
+  instructions               print the handoff protocol
+  remember "<text>"          keep a fact across sessions
+  recall [query]             list memory
+  forget [id|text]           remove memory (no arg clears all)
+  attach <file>              store a file (screenshot) in the media store
+  media                      list stored files
+  model --for "<task>"       pick the cheapest model that can do the job
+  cost [--model id --in N --out M]   price table / single estimate
+  port                       find the port that is actually serving
+  session [save <n> <f>|show <n>|list]   reuse a logged-in browser session
+  audit                      show the guardrail/audit log
+
+send options
+  --to <agent>  --summary <text>  --type <type>  --priority <p>
+  --body <text>  --next <action>  --built <path>  --attach <path>
+  --in-reply-to <id>  --hop <n>  --input <json|@file|->
+
+common: --agent <name>  --json
+`);
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const command = argv[0];
+  const { flags, positional } = parseArgs(argv.slice(1));
+
+  switch (command) {
+    case 'init':
+      cmdInit(flags);
+      break;
+    case 'up':
+      await cmdUp(flags);
+      break;
+    case 'down':
+      await cmdDown();
+      break;
+    case 'kill':
+      await cmdKill();
+      break;
+    case 'daemon': {
+      const { daemonMain } = await import('../daemon/server.ts');
+      daemonMain();
+      break;
+    }
+    case 'mcp': {
+      const { mcpMain } = await import('../mcp/server.ts');
+      mcpMain();
+      break;
+    }
+    case 'send':
+      await cmdSend(flags);
+      break;
+    case 'inbox':
+      await cmdInbox(flags);
+      break;
+    case 'ack':
+      await cmdAck(flags, positional);
+      break;
+    case 'watch':
+      await cmdWatch(flags);
+      break;
+    case 'status':
+      await cmdStatus(flags);
+      break;
+    case 'log':
+      cmdLog(flags);
+      break;
+    case 'logs':
+      cmdLogs(positional);
+      break;
+    case 'splitters':
+    case 'split':
+      cmdSplitters(flags);
+      break;
+    case 'context':
+      cmdContext();
+      break;
+    case 'instructions':
+      console.log(protocolText());
+      break;
+    case 'remember':
+    case 'recall':
+    case 'forget':
+    case 'memory':
+      cmdMemory(command, flags, positional);
+      break;
+    case 'attach':
+      cmdAttach(positional, flags);
+      break;
+    case 'media':
+      cmdMedia(flags);
+      break;
+    case 'model':
+      cmdModel(flags);
+      break;
+    case 'cost':
+      cmdCost(flags);
+      break;
+    case 'port':
+      await cmdPort(flags);
+      break;
+    case 'session':
+      cmdSession(positional[0], positional.slice(1), flags);
+      break;
+    case 'audit':
+      cmdAudit(flags);
+      break;
+    case undefined:
+    case 'help':
+    case '--help':
+    case '-h':
+      usage();
+      break;
+    default:
+      console.error(`unknown command: ${command}`);
+      usage();
+      process.exitCode = 1;
+  }
+}
+
+main().catch((error: unknown) => {
+  if (error instanceof BatonError) console.error(`baton: ${error.message}`);
+  else console.error(error);
+  process.exitCode = 1;
+});
