@@ -41,6 +41,9 @@ function has(bin: string): boolean {
 }
 
 export function installHint(): InstallHint | null {
+  const override = process.env.BATON_INSTALL_CMD;
+  if (override) return { command: override, note: 'from BATON_INSTALL_CMD' };
+
   const os = platform();
 
   if (os === 'win32') {

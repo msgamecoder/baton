@@ -92,6 +92,25 @@ function bool(flags: Flags, key: string): boolean {
   return value === true || value === 'true';
 }
 
+function version(): string {
+  try {
+    const pkg = new URL('../../package.json', import.meta.url);
+    return (JSON.parse(readFileSync(pkg, 'utf8')) as { version?: string }).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+function confirm(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
+
 function requireSender(flags: Flags): string {
   const from = str(flags, 'from') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
   if (!from) throw new BatonError('no sender (use --from, set BATON_AGENT, or run `baton init`)');
@@ -754,13 +773,58 @@ async function cmdConsole(flags: Flags): Promise<void> {
   });
 }
 
+async function cmdWelcome(flags: Flags): Promise<void> {
+  console.log(`baton v${version()} — pass the work between AI coding agents\n`);
+
+  const fresh = !configExists();
+  ensureHome();
+  if (fresh) {
+    saveConfig(defaultConfig());
+    console.log(`created ${CONFIG_PATH}\n`);
+  }
+
+  const report = doctorReport();
+  if (!report.node.ok) {
+    console.log(`node ${report.node.version} is too old — Baton needs >= ${report.node.required}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`node      ${report.node.version} ok`);
+  console.log(`platform  ${report.platform}`);
+
+  const hasPanes = report.chosen !== 'pty' && report.chosen !== 'none';
+  if (hasPanes) {
+    console.log(`panes     ${report.chosen} ok`);
+  } else {
+    console.log('panes     none yet — agents will run in the background (PTY fallback)');
+    if (report.install) {
+      console.log(`          for real split panes: ${report.install.command}`);
+      const auto = bool(flags, 'yes') || process.env.BATON_YES === '1';
+      const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+      if (auto || (interactive && (await confirm('\nInstall it now? [y/N] ')))) {
+        console.log(`running: ${report.install.command}`);
+        const code = runInstall(report.install);
+        console.log(code === 0 ? 'installed — run `baton splitters` to confirm' : `installer exited ${code}`);
+      }
+    }
+  }
+
+  console.log('\nnext:');
+  console.log(`  edit ${CONFIG_PATH} to set your agents and their models`);
+  console.log('  baton up --dry-run     preview the launch');
+  console.log('  baton up               start the daemon and your agents');
+  console.log('  baton console          slash-command console (/help)');
+}
+
 function usage(): void {
   console.log(`baton — pass the work between AI coding agents
 
 usage: baton <command> [options]
 
+run \`baton\` with no command for first-time setup (config + terminal check).
+
 setup
-  init                       create ~/.baton and a starter config
   doctor [--install]         check node/splitter setup, optionally install one
   install                    install the terminal multiplexer for this platform
   up / down / kill           launch agents + daemon / stop daemon / stop everything
@@ -800,8 +864,18 @@ common: --agent <name>  --json
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const command = argv[0];
-  const { flags, positional } = parseArgs(argv.slice(1));
+  let command = argv[0];
+  let rest = argv.slice(1);
+
+  if (command !== undefined && command.startsWith('-')) {
+    const standalone = ['--help', '-h', '--version', '-v', '-V'];
+    if (!standalone.includes(command)) {
+      rest = argv;
+      command = undefined;
+    }
+  }
+
+  const { flags, positional } = parseArgs(rest);
 
   switch (command) {
     case 'init':
@@ -903,10 +977,22 @@ async function main(): Promise<void> {
       cmdAudit(flags);
       break;
     case undefined:
+      await cmdWelcome(flags);
+      break;
+    case 'welcome':
+    case 'setup':
+      await cmdWelcome(flags);
+      break;
     case 'help':
     case '--help':
     case '-h':
       usage();
+      break;
+    case 'version':
+    case '--version':
+    case '-v':
+    case '-V':
+      console.log(`baton v${version()}`);
       break;
     default:
       console.error(`unknown command: ${command}`);

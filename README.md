@@ -32,13 +32,18 @@ Or the one-shot installer (installs the CLI, then offers the panes):
 bash scripts/install.sh
 ```
 
-Then:
+Then just run `baton` — with no command it does first-time setup: creates
+`~/.baton/config.json`, checks node and the terminal splitter, and **offers to install a
+multiplexer for you** (`--yes` to accept non-interactively).
 
 ```bash
-baton init
+baton                 # first-run setup (config + terminal check + install offer)
 baton up --dry-run    # see how it will split your terminal
 baton up
 ```
+
+> The CLI itself must exist once before it can bootstrap the rest — that is the one
+> install line above. Everything after that, `baton` handles.
 
 ### Terminal multiplexer
 
