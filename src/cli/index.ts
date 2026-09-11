@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { createInterface, type Interface } from 'node:readline';
+import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
 import { configExists, defaultConfig, loadConfig, saveConfig, type AgentConfig } from '../core/config.ts';
@@ -58,6 +58,8 @@ import {
 } from '../providers/registry.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { listModels } from '../providers/client.ts';
+import { closePrompts, confirm } from '../core/prompt.ts';
+import { confirmBox, inputBox, note, printCard, selectBox, UiCancelled, type SelectItem } from '../ui/select.ts';
 
 type FlagValue = string | boolean | string[];
 type Flags = Record<string, FlagValue>;
@@ -121,94 +123,6 @@ function version(): string {
   } catch {
     return '0.0.0';
   }
-}
-
-let promptRl: Interface | null = null;
-const pendingLines: string[] = [];
-let lineWaiter: ((line: string) => void) | null = null;
-let linesClosed = false;
-
-function promptInterface(): Interface {
-  if (!promptRl) {
-    promptRl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    });
-    promptRl.on('line', (line) => {
-      if (lineWaiter) {
-        const resolve = lineWaiter;
-        lineWaiter = null;
-        resolve(line);
-      } else {
-        pendingLines.push(line);
-      }
-    });
-    promptRl.on('close', () => {
-      linesClosed = true;
-      if (lineWaiter) {
-        const resolve = lineWaiter;
-        lineWaiter = null;
-        resolve('');
-      }
-    });
-  }
-  return promptRl;
-}
-
-function closePrompts(): void {
-  promptRl?.close();
-  promptRl = null;
-}
-
-function askLine(question: string): Promise<string> {
-  promptInterface();
-  process.stdout.write(question);
-  const queued = pendingLines.shift();
-  if (queued !== undefined) return Promise.resolve(queued);
-  if (linesClosed) return Promise.resolve('');
-  return new Promise((resolve) => {
-    lineWaiter = resolve;
-  });
-}
-
-function confirm(question: string): Promise<boolean> {
-  return askLine(question).then((answer) => /^y(es)?$/i.test(answer.trim()));
-}
-
-function askHidden(question: string): Promise<string> {
-  if (!process.stdin.isTTY) return askLine(question);
-  return new Promise((resolve) => {
-    promptRl?.pause();
-    process.stdout.write(question);
-    const stdin = process.stdin;
-    const wasRaw = stdin.isRaw;
-    stdin.setRawMode(true);
-    stdin.resume();
-    let value = '';
-    const finish = () => {
-      stdin.setRawMode(wasRaw ?? false);
-      stdin.removeListener('data', onData);
-      process.stdout.write('\n');
-      promptRl?.resume();
-      resolve(value);
-    };
-    const onData = (chunk: Buffer) => {
-      for (const ch of chunk.toString('utf8')) {
-        if (ch === '\r' || ch === '\n') {
-          finish();
-          return;
-        }
-        if (ch === '\u0003') process.exit(130);
-        if (ch === '\u007f') {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += ch;
-      }
-    };
-    stdin.on('data', onData);
-  });
 }
 
 function requireSender(flags: Flags): string {
@@ -958,8 +872,17 @@ async function cmdWelcome(flags: Flags): Promise<void> {
       console.log('\nno provider configured yet — run `baton` in a terminal to pick one');
       return;
     }
-    console.log('\nno provider set up yet — let\'s do that now\n');
-    await runWizard();
+    console.log('\nno provider set up yet — let\'s do that now');
+    try {
+      await runWizard();
+    } catch (error) {
+      closePrompts();
+      if (error instanceof UiCancelled) {
+        console.log('\n  cancelled — nothing was changed');
+        return;
+      }
+      throw error;
+    }
     closePrompts();
     console.log('');
   }
@@ -1105,84 +1028,91 @@ async function cmdModels(flags: Flags): Promise<void> {
   }
 }
 
-const BOLD = '\u001b[1m';
-const DIM = '\u001b[2m';
-const RESET = '\u001b[0m';
-
-function renderProviderMenu(providers: Provider[]): Provider[] {
-  console.log(`\n${BOLD}choose a provider${RESET}   ${DIM}keys go to ~/.baton/keys.json (chmod 600)${RESET}\n`);
-  let currentGroup = '';
-  providers.forEach((provider, index) => {
-    if (provider.group !== currentGroup) {
-      currentGroup = provider.group;
-      console.log(`${BOLD}${GROUP_LABELS[provider.group]}${RESET}`);
-    }
-    const keyState = provider.needsKey ? (resolveKey(provider) ? 'key ✓' : 'needs key') : 'no key needed';
-    const url = provider.baseUrl ? provider.baseUrl.replace(/^https?:\/\//, '') : 'you provide the url';
-    console.log(
-      `  ${String(index + 1).padStart(2)}  ${provider.name.padEnd(26)} ${DIM}${provider.format.padEnd(9)} ${url.padEnd(46)}${RESET} ${keyState}`,
-    );
-  });
-  console.log('');
-  return providers;
-}
-
 async function defineCustomProvider(config: ReturnType<typeof loadConfig>): Promise<Provider> {
-  console.log(`\n${BOLD}custom provider${RESET}   ${DIM}you supply everything${RESET}`);
-  const name = (await askLine('  name       e.g. My Gateway: ')).trim() || 'Custom';
-  const baseUrl = (await askLine('  base url   e.g. https://api.example.com/v1: ')).trim();
+  const name = await inputBox({ title: 'custom provider — name', placeholder: 'e.g. My Gateway' });
+  const baseUrl = await inputBox({
+    title: 'custom provider — base url',
+    placeholder: 'e.g. https://api.example.com/v1',
+  });
   if (!baseUrl) throw new BatonError('a base URL is required');
-  const formatAnswer = (await askLine('  format     openai or anthropic [openai]: ')).trim().toLowerCase();
-  const format: WireFormat = formatAnswer === 'anthropic' ? 'anthropic' : 'openai';
+
+  const format = (await selectBox({
+    title: 'custom provider — wire format',
+    items: [
+      { label: 'openai', detail: 'chat completions', value: 'openai' },
+      { label: 'anthropic', detail: 'messages', value: 'anthropic' },
+    ],
+    filterable: false,
+    height: 2,
+  })) as WireFormat;
+
   const id =
-    name
+    (name || 'custom')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '') || `custom-${Date.now().toString(36)}`;
 
-  const def: CustomProviderDef = { id, name, format, baseUrl };
+  const def: CustomProviderDef = { id, name: name || 'Custom', format, baseUrl };
   config.customProviders = [...(config.customProviders ?? []).filter((entry) => entry.id !== id), def];
   saveConfig(config);
 
   const created = getProvider(id, config.customProviders);
   if (!created) throw new BatonError('could not create the custom provider');
+  note(`saved to ${CONFIG_PATH}`);
   return created;
+}
+
+function providerMenuItems(providers: Provider[]): SelectItem[] {
+  const items: SelectItem[] = [];
+  let lastGroup = '';
+  for (const provider of providers) {
+    if (provider.group !== lastGroup) {
+      lastGroup = provider.group;
+      items.push({ label: GROUP_LABELS[provider.group], value: `__group:${provider.group}`, header: true });
+    }
+    const keyState = provider.needsKey ? (resolveKey(provider) ? 'key ✓' : 'needs key') : 'no key needed';
+    items.push({
+      label: provider.name,
+      detail: `${provider.format.padEnd(9)} ${keyState}`,
+      value: provider.id,
+    });
+  }
+  return items;
 }
 
 async function configureProvider(
   config: ReturnType<typeof loadConfig>,
 ): Promise<{ providerId: string; model: string }> {
-  const ordered = renderProviderMenu(orderedProviders(config.customProviders));
+  const providerId = await selectBox({
+    title: 'choose a provider',
+    items: providerMenuItems(orderedProviders(config.customProviders)),
+    height: 14,
+  });
 
-  const answer = (await askLine(`${BOLD}number, id, or c for custom:${RESET} `)).trim().toLowerCase();
-  let provider: Provider | undefined;
-  if (/^\d+$/.test(answer)) provider = ordered[Number(answer) - 1];
-  else if (answer === 'c' || answer === 'custom') provider = getProvider('custom', config.customProviders);
-  else provider = getProvider(answer, config.customProviders);
-  if (!provider) throw new BatonError(`no such provider: ${answer || '(nothing entered)'}`);
-
+  let provider = getProvider(providerId, config.customProviders);
+  if (!provider) throw new BatonError(`no such provider: ${providerId}`);
   if (provider.id === 'custom') provider = await defineCustomProvider(config);
 
-  console.log(`\n${BOLD}${provider.name}${RESET}`);
-  console.log(`  format     ${provider.format}`);
-  console.log(
-    provider.group === 'custom'
-      ? `  base url   ${provider.baseUrl}`
-      : `  base url   ${provider.baseUrl}   ${DIM}(built in — nothing to type)${RESET}`,
-  );
+  const rows: Array<[string, string]> = [
+    ['format', provider.format],
+    ['base url', provider.group === 'custom' ? provider.baseUrl : `${provider.baseUrl}   (built in)`],
+  ];
+  if (!provider.needsKey) rows.push(['key', `not needed${provider.note ? ` — ${provider.note}` : ''}`]);
+  else if (resolveKey(provider)) rows.push(['key', 'already set']);
+  else rows.push(['key', `not set${provider.keyUrl ? ` — create one at ${provider.keyUrl}` : ''}`]);
+  printCard(provider.name, rows);
 
-  if (!provider.needsKey) {
-    console.log(`  key        not needed${provider.note ? `   ${DIM}${provider.note}${RESET}` : ''}`);
-  } else if (resolveKey(provider)) {
-    console.log('  key        already set');
-  } else {
-    console.log(`  key        not set${provider.keyUrl ? ` — create one at ${provider.keyUrl}` : ''}`);
-    const key = (await askHidden('\n  paste your API key: ')).trim();
+  if (provider.needsKey && !resolveKey(provider)) {
+    const key = await inputBox({
+      title: `paste your ${provider.name} API key`,
+      hidden: true,
+      hint: 'enter confirm · esc cancel · empty to skip',
+    });
     if (key) {
       saveKey(provider.id, key);
-      console.log(`  ${DIM}saved to ${keysFile()}${RESET}`);
+      note(`saved to ${keysFile()}`);
     } else {
-      console.log('  no key entered — add one later with `baton key`');
+      note('no key entered — you can add one later with `baton key`');
     }
   }
 
@@ -1202,13 +1132,13 @@ async function configureProvider(
 
   let model: string;
   if (models.length === 0) {
-    model = (await askLine('model name: ')).trim();
+    model = await inputBox({ title: 'model name', placeholder: 'e.g. deepseek-chat' });
   } else {
-    console.log('');
-    models.slice(0, 40).forEach((name, index) => console.log(`  ${String(index + 1).padStart(2)}  ${name}`));
-    if (models.length > 40) console.log(`  ${DIM}... and ${models.length - 40} more${RESET}`);
-    const picked = (await askLine(`\n${BOLD}model number or name:${RESET} `)).trim();
-    model = /^\d+$/.test(picked) ? (models[Number(picked) - 1] ?? models[0]) : picked || models[0];
+    model = await selectBox({
+      title: 'choose a model',
+      items: models.map((name) => ({ label: name, value: name })),
+      height: 12,
+    });
   }
   if (!model) throw new BatonError('no model selected');
 
@@ -1225,20 +1155,20 @@ async function runWizard(): Promise<void> {
   config.agents[0] = { name: leftName, provider: first.providerId, model: first.model };
   if (!config.agents[1]) config.agents[1] = { name: 'right' };
   saveConfig(config);
+  note(`left: ${first.providerId} · ${first.model}`);
 
-  console.log(`\nleft  : ${first.providerId} · ${first.model}`);
-
-  if (await confirm('give the right side a different provider/model? [y/N] ')) {
+  if (await confirmBox('give the right side a different provider/model?')) {
     const second = await configureProvider(config);
     config.agents[1] = { name: config.agents[1].name || 'right', provider: second.providerId, model: second.model };
     saveConfig(config);
-    console.log(`right : ${second.providerId} · ${second.model}`);
+    note(`right: ${second.providerId} · ${second.model}`);
   } else {
     config.agents[1] = { name: config.agents[1].name || 'right', provider: first.providerId, model: first.model };
     saveConfig(config);
-    console.log('right : same as left');
+    note('right: same as left');
   }
-  console.log(`\nsaved ${CONFIG_PATH}`);
+
+  console.log(`\n  saved ${CONFIG_PATH}`);
 }
 
 function usage(): void {

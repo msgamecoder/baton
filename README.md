@@ -31,10 +31,27 @@ baton
 
 1. It checks node and the terminal, and installs a multiplexer if you want panes
    (**no sudo** — tmux is unpacked into `~/.baton/bin`).
-2. It shows a **grouped provider menu**. Pick one by number, by id, or `c` for a custom
-   endpoint. For known providers the **base URL is built in** — you never type it, it just
-   asks for your key. Then it **fetches the model list from that provider** so you choose
-   from what you actually have.
+2. It opens an **interactive setup**: a list you drive with **↑/↓ and Enter** (type to
+   filter, `esc` to cancel), one box per step —
+
+   ```
+   choose a provider
+   ──────────────────────────────────────────────
+   recommended
+   ❯ Command Code            anthropic  needs key
+     OpenCode Zen            openai     needs key
+     OpenCode Go             openai     needs key
+     Claude (Anthropic)      anthropic  needs key
+   frontier models
+     OpenAI                  openai     needs key
+   ...
+   ──────────────────────────────────────────────
+   ↑/↓ move · type to filter · enter select · esc cancel
+   ```
+
+   For known providers the **base URL is built in** — you never type it; the next box just
+   asks for your key. Then it **fetches the model list from that provider** so you pick
+   from a second arrow-key list.
 3. It asks whether the right side should use a different provider/model, then launches:
    **left pane and right pane, both running Baton's own agent.**
 

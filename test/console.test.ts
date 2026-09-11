@@ -16,6 +16,7 @@ const { validateMessage, MESSAGE_TYPES } = await import('../src/core/schema.ts')
 const { defaultConfig } = await import('../src/core/config.ts');
 const { tmuxBin, detectSplitters, userTmuxPath } = await import('../src/core/splitter.ts');
 const registry = await import('../src/providers/registry.ts');
+const { parseKeys } = await import('../src/ui/select.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -89,6 +90,25 @@ test('splitter list always offers tmux and the pty fallback', () => {
   assert.ok(names.includes('pty'));
   assert.equal(typeof tmuxBin(), 'string');
   assert.equal(userTmuxPath(), join(HOME, 'bin', 'tmux'));
+});
+
+test('parseKeys handles coalesced and single key sequences', () => {
+  assert.deepEqual(parseKeys('\u001b[B\u001b[B\r'), [
+    { name: 'down' },
+    { name: 'down' },
+    { name: 'enter' },
+  ]);
+  assert.deepEqual(parseKeys('\u001b[A'), [{ name: 'up' }]);
+  assert.deepEqual(parseKeys('\u001bOA'), [{ name: 'up' }]);
+  assert.deepEqual(parseKeys('\u001b[1;5B'), [{ name: 'down' }]);
+  assert.deepEqual(parseKeys('\u001b'), [{ name: 'escape' }]);
+  assert.deepEqual(parseKeys('\u0003'), [{ name: 'ctrl-c' }]);
+  assert.deepEqual(parseKeys('ab\u007f'), [
+    { name: 'char', char: 'a' },
+    { name: 'char', char: 'b' },
+    { name: 'backspace' },
+  ]);
+  assert.deepEqual(parseKeys('\u001b[C'), []);
 });
 
 test('provider registry: grouped, ordered, complete', () => {
