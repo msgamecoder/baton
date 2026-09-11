@@ -63,6 +63,39 @@ baton chat              talk to the agent here (--agent, --provider, --model, --
 baton ask "…"           one-shot headless run (--yes to allow tools)
 ```
 
+## The interface
+
+`baton chat` opens Baton's **own full-screen terminal UI**, built on
+[OpenTUI](https://opentui.com) — the same native Zig renderer OpenCode uses. Not a
+scrolling list: an alternate-screen app with a block **BATON** wordmark, a bordered
+`conversation` panel that scrolls, a bordered `ask anything` input with a real cursor, and
+a status footer.
+
+```
+        █▄▄ ▄▀█ ▀█▀ █▀█ █▄ █
+        █▄█ █▀█  █  █▄█ █ ▀█
+
+                    oc · OpenCode Go · deepseek-v4.1-flash
+
+  ┌─ conversation ──────────────────────────────────────────────┐
+  │ › refactor the auth module                                  │
+  │ -> read_file src/auth.ts                                    │
+  │ I moved the token check into verifyToken()...               │
+  └─────────────────────────────────────────────────────────────┘
+  ┌─ ask anything ──────────────────────────────────────────────┐
+  │ ❯ _                                                         │
+  └─────────────────────────────────────────────────────────────┘
+  enter send · /help commands · ctrl+c quit · /home/you/project
+```
+
+Type a request and press Enter. `/help` lists the slash commands. Tool calls stream in as
+they happen. `baton up` puts two of these side by side — left and right, each with its own
+provider, key and model.
+
+Requirements for the full-screen UI: **Node 26.4+** (OpenTUI's native core needs FFI).
+Baton re-execs itself with `--experimental-ffi` automatically. On older Node, or if the
+native library cannot load, it prints why and falls back to the plain text chat.
+
 ## Providers
 
 ```bash

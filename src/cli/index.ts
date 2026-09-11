@@ -59,7 +59,7 @@ import {
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { listModels } from '../providers/client.ts';
 import { closePrompts, confirm } from '../core/prompt.ts';
-import { confirmBox, inputBox, note, printCard, selectBox, UiCancelled, type SelectItem } from '../ui/select.ts';
+import { confirmBox, inputBox, isInteractive, note, printCard, selectBox, UiCancelled, type SelectItem } from '../ui/select.ts';
 
 type FlagValue = string | boolean | string[];
 type Flags = Record<string, FlagValue>;
@@ -933,14 +933,54 @@ function resolveChat(flags: Flags): {
   };
 }
 
+function ensureFfi(): void {
+  if (process.execArgv.includes('--experimental-ffi')) return;
+  const entry = process.argv[1];
+  if (!entry) return;
+  const result = spawnSync(process.execPath, ['--experimental-ffi', entry, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+  });
+  process.exit(result.status ?? 0);
+}
+
 async function cmdChat(flags: Flags): Promise<void> {
   const context = resolveChat(flags);
+  const cwd = process.cwd();
+
+  if (isInteractive()) {
+    ensureFfi();
+    try {
+      const { runChatApp } = await import('../ui/app.ts');
+      const { createSession } = await import('../agent/session.ts');
+      const session = createSession({
+        agent: context.agent,
+        provider: context.provider,
+        model: context.model,
+        apiKey: context.apiKey,
+        cwd,
+        autoApprove: context.autoApprove,
+      });
+      await runChatApp({
+        agent: context.agent,
+        providerName: context.provider.name,
+        model: context.model,
+        cwd,
+        handle: (input, ui) => session.handle(input, ui),
+      });
+      return;
+    } catch (error) {
+      console.error(
+        `(full-screen UI unavailable: ${error instanceof Error ? error.message : 'failed'} — using text mode)`,
+      );
+    }
+  }
+
   await startChat({
     agent: context.agent,
     provider: context.provider,
     model: context.model,
     apiKey: context.apiKey,
-    cwd: process.cwd(),
+    cwd,
     autoApprove: context.autoApprove,
     session: str(flags, 'session'),
   });

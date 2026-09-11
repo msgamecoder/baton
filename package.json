@@ -34,5 +34,8 @@
     "cli",
     "multi-agent",
     "tmux"
-  ]
+  ],
+  "dependencies": {
+    "@opentui/core": "^0.5.11"
+  }
 }
