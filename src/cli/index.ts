@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { createInterface, type Interface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
 import { configExists, defaultConfig, loadConfig, saveConfig, type AgentConfig } from '../core/config.ts';
@@ -47,7 +47,15 @@ import { doctorReport, installTmuxUser, runInstall, userInstallAvailable } from 
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
 import { startChat } from '../agent/chat.ts';
 import { buildSystemPrompt, runTurn } from '../agent/loop.ts';
-import { allProviders, getProvider, type CustomProviderDef, type Provider } from '../providers/registry.ts';
+import {
+  allProviders,
+  getProvider,
+  GROUP_LABELS,
+  orderedProviders,
+  type CustomProviderDef,
+  type Provider,
+  type WireFormat,
+} from '../providers/registry.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { listModels } from '../providers/client.ts';
 
@@ -115,42 +123,80 @@ function version(): string {
   }
 }
 
-function confirm(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(/^y(es)?$/i.test(answer.trim()));
+let promptRl: Interface | null = null;
+const pendingLines: string[] = [];
+let lineWaiter: ((line: string) => void) | null = null;
+let linesClosed = false;
+
+function promptInterface(): Interface {
+  if (!promptRl) {
+    promptRl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     });
-  });
+    promptRl.on('line', (line) => {
+      if (lineWaiter) {
+        const resolve = lineWaiter;
+        lineWaiter = null;
+        resolve(line);
+      } else {
+        pendingLines.push(line);
+      }
+    });
+    promptRl.on('close', () => {
+      linesClosed = true;
+      if (lineWaiter) {
+        const resolve = lineWaiter;
+        lineWaiter = null;
+        resolve('');
+      }
+    });
+  }
+  return promptRl;
+}
+
+function closePrompts(): void {
+  promptRl?.close();
+  promptRl = null;
 }
 
 function askLine(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  promptInterface();
+  process.stdout.write(question);
+  const queued = pendingLines.shift();
+  if (queued !== undefined) return Promise.resolve(queued);
+  if (linesClosed) return Promise.resolve('');
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
+    lineWaiter = resolve;
   });
+}
+
+function confirm(question: string): Promise<boolean> {
+  return askLine(question).then((answer) => /^y(es)?$/i.test(answer.trim()));
 }
 
 function askHidden(question: string): Promise<string> {
   if (!process.stdin.isTTY) return askLine(question);
   return new Promise((resolve) => {
+    promptRl?.pause();
     process.stdout.write(question);
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
     stdin.setRawMode(true);
     stdin.resume();
     let value = '';
+    const finish = () => {
+      stdin.setRawMode(wasRaw ?? false);
+      stdin.removeListener('data', onData);
+      process.stdout.write('\n');
+      promptRl?.resume();
+      resolve(value);
+    };
     const onData = (chunk: Buffer) => {
       for (const ch of chunk.toString('utf8')) {
         if (ch === '\r' || ch === '\n') {
-          stdin.setRawMode(wasRaw ?? false);
-          stdin.removeListener('data', onData);
-          process.stdout.write('\n');
-          resolve(value);
+          finish();
           return;
         }
         if (ch === '\u0003') process.exit(130);
@@ -907,11 +953,6 @@ async function cmdWelcome(flags: Flags): Promise<void> {
     }
   }
 
-  if (bool(flags, 'no-start')) {
-    console.log('\nnothing was started.');
-    return;
-  }
-
   if (!loadConfig().defaultProvider) {
     if (!interactive && !auto) {
       console.log('\nno provider configured yet — run `baton` in a terminal to pick one');
@@ -919,7 +960,13 @@ async function cmdWelcome(flags: Flags): Promise<void> {
     }
     console.log('\nno provider set up yet — let\'s do that now\n');
     await runWizard();
+    closePrompts();
     console.log('');
+  }
+
+  if (bool(flags, 'no-start')) {
+    console.log('nothing was started.');
+    return;
   }
 
   if (!panesOk && !bool(flags, 'force') && !bool(flags, 'dry-run')) {
@@ -1058,57 +1105,109 @@ async function cmdModels(flags: Flags): Promise<void> {
   }
 }
 
+const BOLD = '\u001b[1m';
+const DIM = '\u001b[2m';
+const RESET = '\u001b[0m';
+
+function renderProviderMenu(providers: Provider[]): Provider[] {
+  console.log(`\n${BOLD}choose a provider${RESET}   ${DIM}keys go to ~/.baton/keys.json (chmod 600)${RESET}\n`);
+  let currentGroup = '';
+  providers.forEach((provider, index) => {
+    if (provider.group !== currentGroup) {
+      currentGroup = provider.group;
+      console.log(`${BOLD}${GROUP_LABELS[provider.group]}${RESET}`);
+    }
+    const keyState = provider.needsKey ? (resolveKey(provider) ? 'key ✓' : 'needs key') : 'no key needed';
+    const url = provider.baseUrl ? provider.baseUrl.replace(/^https?:\/\//, '') : 'you provide the url';
+    console.log(
+      `  ${String(index + 1).padStart(2)}  ${provider.name.padEnd(26)} ${DIM}${provider.format.padEnd(9)} ${url.padEnd(46)}${RESET} ${keyState}`,
+    );
+  });
+  console.log('');
+  return providers;
+}
+
+async function defineCustomProvider(config: ReturnType<typeof loadConfig>): Promise<Provider> {
+  console.log(`\n${BOLD}custom provider${RESET}   ${DIM}you supply everything${RESET}`);
+  const name = (await askLine('  name       e.g. My Gateway: ')).trim() || 'Custom';
+  const baseUrl = (await askLine('  base url   e.g. https://api.example.com/v1: ')).trim();
+  if (!baseUrl) throw new BatonError('a base URL is required');
+  const formatAnswer = (await askLine('  format     openai or anthropic [openai]: ')).trim().toLowerCase();
+  const format: WireFormat = formatAnswer === 'anthropic' ? 'anthropic' : 'openai';
+  const id =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || `custom-${Date.now().toString(36)}`;
+
+  const def: CustomProviderDef = { id, name, format, baseUrl };
+  config.customProviders = [...(config.customProviders ?? []).filter((entry) => entry.id !== id), def];
+  saveConfig(config);
+
+  const created = getProvider(id, config.customProviders);
+  if (!created) throw new BatonError('could not create the custom provider');
+  return created;
+}
+
 async function configureProvider(
   config: ReturnType<typeof loadConfig>,
 ): Promise<{ providerId: string; model: string }> {
-  const list = allProviders(config.customProviders);
+  const ordered = renderProviderMenu(orderedProviders(config.customProviders));
 
-  console.log('providers:\n');
-  list.forEach((provider, index) => {
-    const suffix = provider.needsKey ? '' : '  (no key needed)';
-    console.log(`  ${String(index + 1).padStart(2)}. ${provider.name}${suffix}`);
-  });
+  const answer = (await askLine(`${BOLD}number, id, or c for custom:${RESET} `)).trim().toLowerCase();
+  let provider: Provider | undefined;
+  if (/^\d+$/.test(answer)) provider = ordered[Number(answer) - 1];
+  else if (answer === 'c' || answer === 'custom') provider = getProvider('custom', config.customProviders);
+  else provider = getProvider(answer, config.customProviders);
+  if (!provider) throw new BatonError(`no such provider: ${answer || '(nothing entered)'}`);
 
-  const answer = (await askLine('\nprovider number or id: ')).trim();
-  let provider = /^\d+$/.test(answer) ? list[Number(answer) - 1] : getProvider(answer, config.customProviders);
-  if (!provider) throw new BatonError('no such provider');
+  if (provider.id === 'custom') provider = await defineCustomProvider(config);
 
-  if (provider.id === 'custom') {
-    const baseUrl = (await askLine('base URL (e.g. https://api.example.com/v1): ')).trim();
-    const format = ((await askLine('wire format — openai or anthropic [openai]: ')).trim() || 'openai') === 'anthropic' ? 'anthropic' : 'openai';
-    const id = (await askLine('short id for it: ')).trim() || 'custom';
-    const def: CustomProviderDef = { id, name: `${id} (custom)`, format, baseUrl };
-    config.customProviders = [...(config.customProviders ?? []), def];
-    provider = getProvider(id, config.customProviders);
-    if (!provider) throw new BatonError('custom provider could not be created');
-  }
+  console.log(`\n${BOLD}${provider.name}${RESET}`);
+  console.log(`  format     ${provider.format}`);
+  console.log(
+    provider.group === 'custom'
+      ? `  base url   ${provider.baseUrl}`
+      : `  base url   ${provider.baseUrl}   ${DIM}(built in — nothing to type)${RESET}`,
+  );
 
-  if (provider.needsKey && !resolveKey(provider)) {
-    if (provider.keyUrl) console.log(`\ncreate a key at ${provider.keyUrl}`);
-    const key = (await askHidden(`paste your ${provider.name} API key: `)).trim();
+  if (!provider.needsKey) {
+    console.log(`  key        not needed${provider.note ? `   ${DIM}${provider.note}${RESET}` : ''}`);
+  } else if (resolveKey(provider)) {
+    console.log('  key        already set');
+  } else {
+    console.log(`  key        not set${provider.keyUrl ? ` — create one at ${provider.keyUrl}` : ''}`);
+    const key = (await askHidden('\n  paste your API key: ')).trim();
     if (key) {
       saveKey(provider.id, key);
-      console.log(`saved to ${keysFile()}`);
+      console.log(`  ${DIM}saved to ${keysFile()}${RESET}`);
     } else {
-      console.log('no key entered — you can add one later with `baton key`');
+      console.log('  no key entered — add one later with `baton key`');
     }
   }
 
+  process.stdout.write(`\n  fetching models from ${provider.name} ... `);
   let models: string[] = [];
   try {
     models = await listModels(provider, resolveKey(provider));
   } catch {
     models = [];
   }
-  if (models.length === 0) models = provider.defaultModels;
+  if (models.length === 0) {
+    console.log('could not reach it');
+    models = provider.defaultModels;
+  } else {
+    console.log(`${models.length} found`);
+  }
 
   let model: string;
   if (models.length === 0) {
     model = (await askLine('model name: ')).trim();
   } else {
-    console.log('\nmodels:\n');
-    models.slice(0, 40).forEach((name, index) => console.log(`  ${String(index + 1).padStart(2)}. ${name}`));
-    const picked = (await askLine('\nmodel number or name: ')).trim();
+    console.log('');
+    models.slice(0, 40).forEach((name, index) => console.log(`  ${String(index + 1).padStart(2)}  ${name}`));
+    if (models.length > 40) console.log(`  ${DIM}... and ${models.length - 40} more${RESET}`);
+    const picked = (await askLine(`\n${BOLD}model number or name:${RESET} `)).trim();
     model = /^\d+$/.test(picked) ? (models[Number(picked) - 1] ?? models[0]) : picked || models[0];
   }
   if (!model) throw new BatonError('no model selected');

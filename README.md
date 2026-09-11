@@ -31,9 +31,12 @@ baton
 
 1. It checks node and the terminal, and installs a multiplexer if you want panes
    (**no sudo** — tmux is unpacked into `~/.baton/bin`).
-2. It lists providers, you pick one, paste your key, and it **fetches the model list from
-   that provider** so you choose from what you actually have.
-3. Then it launches: **left pane and right pane, both running Baton's own agent.**
+2. It shows a **grouped provider menu**. Pick one by number, by id, or `c` for a custom
+   endpoint. For known providers the **base URL is built in** — you never type it, it just
+   asks for your key. Then it **fetches the model list from that provider** so you choose
+   from what you actually have.
+3. It asks whether the right side should use a different provider/model, then launches:
+   **left pane and right pane, both running Baton's own agent.**
 
 Re-running `baton` attaches to what is already running. `baton kill` stops everything.
 
@@ -52,15 +55,24 @@ baton models --provider deepseek    # list models straight from the provider
 baton providers --json
 ```
 
-| Provider | Wire format |
-|----------|-------------|
-| Command Code, Claude (Anthropic) | anthropic |
-| OpenCode Zen, OpenCode Go, OpenAI, DeepSeek, Kimi, Gemini, OpenRouter, Groq, xAI, Mistral | openai |
-| Ollama, LM Studio (local) | openai, no key |
-| Custom | you give the base URL + format |
+The picker groups them:
 
-Keys live in `~/.baton/keys.json` (mode 600). Environment variables are honoured as a
-fallback (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …).
+- **recommended** — Command Code · OpenCode Zen · OpenCode Go · Claude (Anthropic)
+- **frontier models** — OpenAI · Google Gemini · xAI (Grok) · Mistral · Perplexity
+- **open models (fast + cheap)** — DeepSeek · Kimi (Moonshot) · Groq · Together AI ·
+  Fireworks AI · Cerebras · DeepInfra · SiliconFlow · Z.ai (GLM) · Alibaba DashScope (Qwen)
+- **gateways / routers** — OpenRouter · Vercel AI Gateway · LiteLLM (your own proxy)
+- **local (no key)** — Ollama · LM Studio · vLLM
+- **something else** — *Custom endpoint*
+
+Picking **Custom endpoint** asks for the **name, base URL, format (openai/anthropic) and
+key** — it is saved into `config.json` and appears in the menu next time, so you only
+describe it once.
+
+Wire format: Command Code and Claude use **anthropic**; everything else is **openai**
+(chat-completions compatible). Base URLs are built in and displayed in the menu; keys live
+in `~/.baton/keys.json` (mode 600) with environment variables as a fallback
+(`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, …).
 
 ## Slash commands
 

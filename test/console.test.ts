@@ -15,6 +15,7 @@ const { buildUpPlan, buildHeadlessCommand, commandExists, runningAgents } = awai
 const { validateMessage, MESSAGE_TYPES } = await import('../src/core/schema.ts');
 const { defaultConfig } = await import('../src/core/config.ts');
 const { tmuxBin, detectSplitters, userTmuxPath } = await import('../src/core/splitter.ts');
+const registry = await import('../src/providers/registry.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -88,4 +89,27 @@ test('splitter list always offers tmux and the pty fallback', () => {
   assert.ok(names.includes('pty'));
   assert.equal(typeof tmuxBin(), 'string');
   assert.equal(userTmuxPath(), join(HOME, 'bin', 'tmux'));
+});
+
+test('provider registry: grouped, ordered, complete', () => {
+  const custom = [{ id: 'mine', name: 'Mine', format: 'openai' as const, baseUrl: 'https://x.example/v1' }];
+  const list = registry.orderedProviders(custom);
+
+  const groupIndices = list.map((p) => registry.GROUP_ORDER.indexOf(p.group));
+  assert.deepEqual(groupIndices, [...groupIndices].sort((a, b) => a - b));
+
+  for (const provider of list) {
+    assert.ok(provider.chatPath.startsWith('/'), provider.id);
+    assert.ok(provider.modelsPath.startsWith('/'), provider.id);
+    assert.ok(['openai', 'anthropic'].includes(provider.format), provider.id);
+    assert.ok(registry.GROUP_ORDER.includes(provider.group), provider.id);
+    if (provider.id !== 'custom') assert.ok(provider.baseUrl.length > 0, provider.id);
+  }
+
+  assert.ok(list.some((p) => p.id === 'mine'), 'custom provider should be listed');
+  assert.equal(registry.getProvider('mine', custom)?.baseUrl, 'https://x.example/v1');
+  assert.equal(registry.getProvider('command-code')?.format, 'anthropic');
+  assert.equal(registry.getProvider('command-code')?.chatPath, '/messages');
+  assert.equal(registry.getProvider('deepseek')?.chatPath, '/chat/completions');
+  assert.ok(registry.allProviders().length >= 25);
 });
