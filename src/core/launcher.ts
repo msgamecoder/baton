@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { platform } from 'node:os';
@@ -91,6 +91,41 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
     note: `background agents (${platform()}) — logs in ~/.baton/agents`,
     background: true,
   };
+}
+
+export function commandExists(command: string): boolean {
+  const bin = command.trim().split(/\s+/)[0];
+  if (!bin) return false;
+  const probe = platform() === 'win32' ? 'where' : 'which';
+  const result = spawnSync(probe, [bin], { stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function runningAgents(): StartedAgent[] {
+  if (!existsSync(PIDS_PATH)) return [];
+  try {
+    const started = JSON.parse(readFileSync(PIDS_PATH, 'utf8')) as StartedAgent[];
+    return started.filter((a) => typeof a.pid === 'number' && isAlive(a.pid));
+  } catch {
+    return [];
+  }
+}
+
+export function tmuxSessionExists(name = 'baton'): boolean {
+  return spawnSync('tmux', ['has-session', '-t', name], { stdio: 'ignore' }).status === 0;
+}
+
+export function tmuxAttach(name = 'baton'): void {
+  spawnSync('tmux', ['attach', '-t', name], { stdio: 'inherit' });
 }
 
 export function spawnBackground(config: BatonConfig): StartedAgent[] {

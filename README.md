@@ -32,14 +32,17 @@ Or the one-shot installer (installs the CLI, then offers the panes):
 bash scripts/install.sh
 ```
 
-Then just run `baton` — with no command it does first-time setup: creates
-`~/.baton/config.json`, checks node and the terminal splitter, and **offers to install a
-multiplexer for you** (`--yes` to accept non-interactively).
+Then **just run `baton`**. With no command it sets up (creates `~/.baton/config.json`,
+checks node and the terminal splitter), **installs what is missing**, and then **launches the
+daemon and your agents** in one go. Re-running `baton` attaches to what is already running
+instead of starting a second copy.
 
 ```bash
-baton                 # first-run setup (config + terminal check + install offer)
-baton up --dry-run    # see how it will split your terminal
-baton up
+baton                 # set up + install what's missing + launch
+baton --no-start      # set up only
+baton --yes           # never prompt (auto-accept installs)
+baton up --dry-run    # preview the launch without running it
+baton kill            # stop everything
 ```
 
 > The CLI itself must exist once before it can bootstrap the rest — that is the one

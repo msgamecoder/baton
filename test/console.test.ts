@@ -9,7 +9,9 @@ process.env.BATON_HOME = HOME;
 writeFileSync(join(HOME, 'note.txt'), 'x');
 
 const { parseSlash, slashHelp, directiveHelp } = await import('../src/core/console.ts');
-const { buildUpPlan, buildHeadlessCommand } = await import('../src/core/launcher.ts');
+const { buildUpPlan, buildHeadlessCommand, commandExists, runningAgents } = await import(
+  '../src/core/launcher.ts'
+);
 const { validateMessage, MESSAGE_TYPES } = await import('../src/core/schema.ts');
 const { defaultConfig } = await import('../src/core/config.ts');
 
@@ -67,4 +69,14 @@ test('buildHeadlessCommand substitutes prompt, model and resume', () => {
 
 test('buildHeadlessCommand explains a missing template', () => {
   assert.throws(() => buildHeadlessCommand({ name: 'x', command: 'x' }, 'hi'), /headless/);
+});
+
+test('commandExists detects real and missing binaries', () => {
+  assert.equal(commandExists('node'), true);
+  assert.equal(commandExists('node --version'), true);
+  assert.equal(commandExists('definitely-not-a-real-binary-xyz'), false);
+});
+
+test('runningAgents is empty with no pid file', () => {
+  assert.deepEqual(runningAgents(), []);
 });

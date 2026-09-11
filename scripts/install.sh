@@ -54,7 +54,10 @@ if [ "$SKIP_PANES" -eq 0 ] && [ -t 0 ]; then
 fi
 
 say ""
-say "Done. Next:"
-say "  baton init"
-say "  baton up --dry-run"
-say "  baton up"
+say "Done. Starting Baton..."
+say ""
+if [ -t 0 ]; then
+  baton
+else
+  say "run \`baton\` to start (or \`baton --no-start\` to set up only)"
+fi

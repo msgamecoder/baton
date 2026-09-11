@@ -25,7 +25,16 @@ import {
   type Priority,
 } from '../core/schema.ts';
 import { daemonUp, remoteAck, remoteInbox, remoteSend } from '../core/client.ts';
-import { buildHeadlessCommand, buildUpPlan, spawnBackground, stopAgents } from '../core/launcher.ts';
+import {
+  buildHeadlessCommand,
+  buildUpPlan,
+  commandExists,
+  runningAgents,
+  spawnBackground,
+  stopAgents,
+  tmuxAttach,
+  tmuxSessionExists,
+} from '../core/launcher.ts';
 import { detectSplitters, pickSplitter } from '../core/splitter.ts';
 import { allMemory, forget, memoryBlock, recall, remember } from '../core/memory.ts';
 import { humanSize, listMedia, storeFile } from '../core/media.ts';
@@ -413,6 +422,25 @@ async function cmdUp(flags: Flags): Promise<void> {
     console.log(`splitter: ${plan.splitter} — ${plan.note}`);
     for (const command of plan.commands) console.log(`  ${command}`);
     return;
+  }
+
+  if (!bool(flags, 'force')) {
+    if (plan.splitter === 'tmux' && tmuxSessionExists()) {
+      console.log('baton is already running — attaching');
+      tmuxAttach();
+      return;
+    }
+    const running = runningAgents();
+    if (running.length > 0) {
+      console.log(`already running: ${running.map((a) => a.name).join(', ')}`);
+      console.log('tail: baton logs <agent>   restart: baton up --force   stop: baton kill');
+      return;
+    }
+  }
+
+  const missing = config.agents.filter((a) => !commandExists(a.command));
+  if (missing.length > 0) {
+    console.log(`warning: not on PATH — ${missing.map((a) => `${a.name} (${a.command})`).join(', ')}`);
   }
 
   if (!(await daemonUp())) {
@@ -810,11 +838,13 @@ async function cmdWelcome(flags: Flags): Promise<void> {
     }
   }
 
-  console.log('\nnext:');
-  console.log(`  edit ${CONFIG_PATH} to set your agents and their models`);
-  console.log('  baton up --dry-run     preview the launch');
-  console.log('  baton up               start the daemon and your agents');
-  console.log('  baton console          slash-command console (/help)');
+  if (bool(flags, 'no-start')) {
+    console.log('\nnothing was started. run `baton` when you are ready.');
+    return;
+  }
+
+  console.log('\nstarting baton...\n');
+  await cmdUp(flags);
 }
 
 function usage(): void {
@@ -822,7 +852,9 @@ function usage(): void {
 
 usage: baton <command> [options]
 
-run \`baton\` with no command for first-time setup (config + terminal check).
+run \`baton\` with no command: it sets up (config + terminal check), installs what is
+missing, then launches the daemon and your agents. Re-running it attaches instead of
+starting a second copy. Use --no-start to set up only, or --yes to skip the prompts.
 
 setup
   doctor [--install]         check node/splitter setup, optionally install one
