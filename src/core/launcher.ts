@@ -23,7 +23,29 @@ export interface StartedAgent {
 const PIDS_PATH = join(AGENTS_DIR, 'pids.json');
 
 function paneCommand(agent: AgentConfig): string {
-  return `BATON_AGENT=${agent.name} ${agent.command}`;
+  const model = agent.model ? ` ${agent.modelFlag ?? '--model'} ${agent.model}` : '';
+  return `BATON_AGENT=${agent.name} ${agent.command}${model}`;
+}
+
+export function buildHeadlessCommand(
+  agent: AgentConfig,
+  prompt: string,
+  options: { model?: string; resume?: boolean } = {},
+): string {
+  if (!agent.headless) {
+    throw new Error(
+      `agent "${agent.name}" has no "headless" template in ~/.baton/config.json ` +
+        '(e.g. "cmd -p {prompt}" or "opencode run {prompt}")',
+    );
+  }
+  const model = options.model ?? agent.model ?? '';
+  const resume = options.resume ? (agent.resumeFlag ?? '--continue') : '';
+  return agent.headless
+    .replaceAll('{prompt}', prompt.replace(/"/g, '\\"'))
+    .replaceAll('{model}', model)
+    .replaceAll('{resume}', resume)
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function buildUpPlan(config: BatonConfig): UpPlan {
@@ -63,7 +85,9 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
 
   return {
     splitter: 'pty',
-    commands: agents.map((agent) => `BATON_AGENT=${agent.name} ${agent.command}  # logs -> ${join(AGENTS_DIR, agent.name + '.log')}`),
+    commands: agents.map(
+      (agent) => `${paneCommand(agent)}  # logs -> ${join(AGENTS_DIR, agent.name + '.log')}`,
+    ),
     note: `background agents (${platform()}) — logs in ~/.baton/agents`,
     background: true,
   };

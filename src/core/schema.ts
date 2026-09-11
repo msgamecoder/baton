@@ -9,6 +9,7 @@ export const MESSAGE_TYPES = [
   'ack',
   'done',
   'fyi',
+  'command',
 ] as const;
 export type MessageType = (typeof MESSAGE_TYPES)[number];
 
@@ -82,6 +83,7 @@ export interface Message {
   autoContinue?: boolean;
   cost?: Cost;
   memory?: string[];
+  command?: string;
 }
 
 export class BatonError extends Error {}
@@ -124,6 +126,7 @@ export function validateMessage(input: unknown): Message {
   };
 
   if (typeof m.body === 'string') msg.body = m.body;
+  if (typeof m.command === 'string') msg.command = m.command;
   if (typeof m.inReplyTo === 'string') msg.inReplyTo = m.inReplyTo;
   if (typeof m.sessionRef === 'string') msg.sessionRef = m.sessionRef;
   if (typeof m.replyRequired === 'boolean') msg.replyRequired = m.replyRequired;

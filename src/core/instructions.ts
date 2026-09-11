@@ -37,5 +37,15 @@ export function protocolText(): string {
     '   more than the hop cap, stop and tell the user. `baton kill` stops everything.',
     '7. Include `--hop <n+1>` when you hand work onward, so loops are caught.',
     '',
+    '## Control directives',
+    'The coordinator can send a `command` message (type `command`) to steer you:',
+    '  model=<name>   switch to a cheaper/other model for the next step',
+    '  effort=<lvl>   low | medium | high',
+    '  resume         continue your previous work',
+    '  think          allow deeper reasoning',
+    '  stop           stop the current task',
+    '  remember=<txt> store something in memory',
+    'Read them with `baton inbox` / `relay_inbox` and apply them.',
+    '',
   ].join('\n');
 }

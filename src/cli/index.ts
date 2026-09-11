@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
-import { configExists, defaultConfig, loadConfig, saveConfig } from '../core/config.ts';
+import { configExists, defaultConfig, loadConfig, saveConfig, type AgentConfig } from '../core/config.ts';
 import {
   appendMessage,
   ensureHome,
@@ -15,6 +16,7 @@ import {
   tail,
 } from '../core/store.ts';
 import {
+  MESSAGE_TYPES,
   BatonError,
   checkLoop,
   validateMessage,
@@ -22,8 +24,8 @@ import {
   type MessageType,
   type Priority,
 } from '../core/schema.ts';
-import { daemonUp, remoteAck, remoteInbox, remoteSend, remoteStatus } from '../core/client.ts';
-import { buildUpPlan, spawnBackground, stopAgents } from '../core/launcher.ts';
+import { daemonUp, remoteAck, remoteInbox, remoteSend } from '../core/client.ts';
+import { buildHeadlessCommand, buildUpPlan, spawnBackground, stopAgents } from '../core/launcher.ts';
 import { detectSplitters, pickSplitter } from '../core/splitter.ts';
 import { allMemory, forget, memoryBlock, recall, remember } from '../core/memory.ts';
 import { humanSize, listMedia, storeFile } from '../core/media.ts';
@@ -32,6 +34,8 @@ import { detectPorts } from '../core/probe.ts';
 import { listSessions, saveSession, sessionPath, sessionPreview } from '../core/session.ts';
 import { audit, readAudit } from '../core/audit.ts';
 import { protocolText } from '../core/instructions.ts';
+import { doctorReport, runInstall } from '../core/doctor.ts';
+import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
 
 type FlagValue = string | boolean | string[];
 type Flags = Record<string, FlagValue>;
@@ -100,6 +104,12 @@ function requireAgent(flags: Flags): string {
   return agent;
 }
 
+function resolveSelf(flags: Flags): string {
+  const self = str(flags, 'from') || str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  if (!self) throw new BatonError('no identity (use --agent, set BATON_AGENT, or run `baton init`)');
+  return self;
+}
+
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -130,14 +140,36 @@ function printMessages(messages: Message[], asJson: boolean): void {
   for (const m of messages) console.log(formatMessage(m));
 }
 
-async function resolveInput(flags: Flags): Promise<unknown> {
+function prepare(partial: Record<string, unknown>): Message {
+  const message = validateMessage(partial);
+  if (message.attachments) {
+    message.attachments = message.attachments.map((a) => (existsSync(a.path) ? storeFile(a.path) : a));
+  }
+  checkLoop(message, loadConfig().maxHop);
+  return message;
+}
+
+async function deliver(message: Message): Promise<Message> {
+  let stored = message;
+  if (await daemonUp()) {
+    const sent = await remoteSend(message);
+    if (sent) stored = sent;
+    else appendMessage(message);
+  } else {
+    appendMessage(message);
+  }
+  audit('send', stored.from, `${stored.to}:${stored.type}`);
+  return stored;
+}
+
+async function resolveInput(flags: Flags): Promise<Record<string, unknown> | undefined> {
   const inputArg = str(flags, 'input');
   if (inputArg === undefined) return undefined;
   let raw: string;
   if (inputArg === '-') raw = await readStdin();
   else if (inputArg.startsWith('@')) raw = readFileSync(inputArg.slice(1), 'utf8');
   else raw = inputArg;
-  return JSON.parse(raw);
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 async function collectInbox(agent: string, waitMs: number, peek: boolean): Promise<Message[]> {
@@ -161,17 +193,17 @@ async function collectInbox(agent: string, waitMs: number, peek: boolean): Promi
 
 async function cmdSend(flags: Flags): Promise<void> {
   const raw = await resolveInput(flags);
-  let message: Message;
+  let partial: Record<string, unknown>;
 
   if (raw !== undefined) {
-    message = validateMessage(raw);
+    partial = raw;
   } else {
     const to = str(flags, 'to');
     const summary = str(flags, 'summary');
     if (!to) throw new BatonError('send needs --to');
     if (!summary) throw new BatonError('send needs --summary (or pass --input)');
 
-    message = validateMessage({
+    partial = {
       from: requireSender(flags),
       to,
       type: (str(flags, 'type') as MessageType) ?? 'fyi',
@@ -185,27 +217,22 @@ async function cmdSend(flags: Flags): Promise<void> {
       hop: str(flags, 'hop') ? Number(str(flags, 'hop')) : 0,
       autoContinue: str(flags, 'auto-continue') === 'false' ? false : undefined,
       sessionRef: str(flags, 'session'),
-    });
+    };
   }
 
-  if (message.attachments) {
-    message.attachments = message.attachments.map((a) => (existsSync(a.path) ? storeFile(a.path) : a));
-  }
-
-  checkLoop(message, loadConfig().maxHop);
-
-  let stored = message;
-  if (await daemonUp()) {
-    const sent = await remoteSend(message);
-    if (sent) stored = sent;
-    else appendMessage(message);
-  } else {
-    appendMessage(message);
-  }
-
-  audit('send', stored.from, `${stored.to}:${stored.type}`);
+  const stored = await deliver(prepare(partial));
   if (bool(flags, 'json')) console.log(JSON.stringify(stored));
   else console.log(`${stored.id}  ${stored.from} -> ${stored.to}  ${stored.type}`);
+}
+
+async function cmdCmd(flags: Flags, positional: string[]): Promise<void> {
+  const [agent, ...rest] = positional;
+  if (!agent || rest.length === 0) throw new BatonError('usage: baton cmd <agent> <directive>');
+  const directive = rest.join(' ');
+  const stored = await deliver(
+    prepare({ from: requireSender(flags), to: agent, type: 'command', summary: directive, command: directive }),
+  );
+  console.log(`${stored.id}  -> ${agent}  command: ${directive}`);
 }
 
 async function cmdInbox(flags: Flags): Promise<void> {
@@ -253,7 +280,12 @@ async function cmdStatus(flags: Flags): Promise<void> {
         daemon: live ? `up :${config.port}` : 'down',
         splitter: splitter.name,
         total: messages.length,
-        agents: config.agents.map((a) => ({ name: a.name, command: a.command, pending: pendingCount(a.name) })),
+        agents: config.agents.map((a) => ({
+          name: a.name,
+          command: a.command,
+          model: a.model ?? null,
+          pending: pendingCount(a.name),
+        })),
         memory: allMemory().length,
       }),
     );
@@ -267,7 +299,8 @@ async function cmdStatus(flags: Flags): Promise<void> {
   console.log(`memory     : ${allMemory().length} entries`);
   console.log('agents:');
   for (const agent of config.agents) {
-    console.log(`  ${agent.name.padEnd(10)} ${agent.command.padEnd(14)} pending: ${pendingCount(agent.name)}`);
+    const model = agent.model ? ` model=${agent.model}` : '';
+    console.log(`  ${agent.name.padEnd(10)} ${agent.command.padEnd(14)}${model}  pending: ${pendingCount(agent.name)}`);
   }
   const last = messages[messages.length - 1];
   if (last) console.log(`last       : ${new Date(last.ts).toISOString()}  ${last.from} -> ${last.to}  ${last.summary}`);
@@ -302,12 +335,47 @@ function cmdInit(flags: Flags): void {
     console.log(`wrote ${CONFIG_PATH}`);
   }
   console.log(`log  : ${LOG_PATH}`);
-  console.log('next : baton send --from cc --to oc --type handoff --summary "hello"');
+  console.log('next : baton doctor   # check the terminal setup');
 }
 
 function cmdLog(flags: Flags): void {
   const n = str(flags, 'n') ? Number(str(flags, 'n')) : 20;
   printMessages(tail(n), bool(flags, 'json'));
+}
+
+function cmdDoctor(flags: Flags): void {
+  const report = doctorReport();
+  console.log(`${report.node.ok ? 'ok  ' : 'MISS'} node       ${report.node.version} (need >= ${report.node.required})`);
+  console.log(`ok   platform   ${report.platform}`);
+  console.log(`     splitter   ${report.chosen}`);
+  for (const s of report.splitters) console.log(`  ${s.available ? 'x' : ' '} ${s.name.padEnd(9)} ${s.note}`);
+
+  if (report.install) {
+    console.log(`\nterminal multiplexer not required — but for real panes install:\n  ${report.install.command}\n  # ${report.install.note}`);
+  }
+
+  if (bool(flags, 'install')) {
+    if (!report.install) {
+      console.log('\nnothing to install');
+      return;
+    }
+    console.log(`\nrunning: ${report.install.command}`);
+    const code = runInstall(report.install);
+    console.log(code === 0 ? 'done — run `baton splitters` to confirm' : `installer exited ${code}`);
+  } else {
+    console.log('\nrun `baton install` to do it now');
+  }
+}
+
+function cmdInstall(): void {
+  const report = doctorReport();
+  if (!report.install) {
+    console.log('no installer for this platform — Baton will use the PTY fallback');
+    return;
+  }
+  console.log(`running: ${report.install.command}`);
+  const code = runInstall(report.install);
+  console.log(code === 0 ? 'done — run `baton splitters` to confirm' : `installer exited ${code}`);
 }
 
 function startDaemonDetached(): void {
@@ -374,9 +442,7 @@ async function cmdKill(): Promise<void> {
 }
 
 function cmdLogs(positional: string[]): void {
-  const agents = loadConfig().agents.map((a) => a.name);
-  const target = positional[0];
-  const names = target ? [target] : agents;
+  const names = positional[0] ? [positional[0]] : loadConfig().agents.map((a) => a.name);
   for (const name of names) {
     const path = join(BATON_HOME, 'agents', `${name}.log`);
     if (!existsSync(path)) {
@@ -388,13 +454,44 @@ function cmdLogs(positional: string[]): void {
   }
 }
 
+function cmdRun(flags: Flags, positional: string[]): void {
+  const [agentName, ...promptParts] = positional;
+  if (!agentName) throw new BatonError('usage: baton run <agent> <prompt>');
+
+  const agent = loadConfig().agents.find((a) => a.name === agentName);
+  if (!agent) throw new BatonError(`unknown agent: ${agentName}`);
+
+  const prompt = promptParts.join(' ') || str(flags, 'prompt') || '';
+  let command: string;
+  try {
+    command = buildHeadlessCommand(agent, prompt, {
+      model: str(flags, 'model'),
+      resume: bool(flags, 'resume') || bool(flags, 'continue'),
+    });
+  } catch (error) {
+    throw new BatonError(error instanceof Error ? error.message : 'cannot build command');
+  }
+
+  if (bool(flags, 'dry-run')) {
+    console.log(command);
+    return;
+  }
+
+  audit('run', agent.name, command.slice(0, 160));
+  const result = spawnSync(command, {
+    shell: true,
+    stdio: 'inherit',
+    env: { ...process.env, BATON_AGENT: agent.name, ...(agent.env ?? {}) },
+  });
+  if (typeof result.status === 'number' && result.status !== 0) process.exitCode = result.status;
+}
+
 function cmdMemory(action: string | undefined, flags: Flags, positional: string[]): void {
   const text = positional.join(' ').trim();
 
   if (action === 'remember' || action === 'add') {
     if (!text) throw new BatonError('remember needs text: baton remember "keep this"');
-    const entry = remember(text, str(flags, 'source'));
-    console.log(`remembered ${entry.id}`);
+    console.log(`remembered ${remember(text, str(flags, 'source')).id}`);
     return;
   }
   if (action === 'forget') {
@@ -441,9 +538,9 @@ function cmdModel(flags: Flags): void {
     console.log(JSON.stringify({ tier, hint, model, estimatedUsd: usd }, null, 2));
     return;
   }
-  console.log(`task   : ${hint || '(none)'} -> tier ${tier}`);
-  console.log(`model  : ${model.id}  (${model.provider}, tier ${model.tier})`);
-  console.log(`price  : $${model.in}/M in, $${model.out}/M out`);
+  console.log(`task    : ${hint || '(none)'} -> tier ${tier}`);
+  console.log(`model   : ${model.id}  (${model.provider}, tier ${model.tier})`);
+  console.log(`price   : $${model.in}/M in, $${model.out}/M out`);
   console.log(`estimate: ~$${usd.toFixed(4)} for ${inputTokens} in + ${outputTokens} out tokens`);
   console.log('(edit ~/.baton/prices.json to match your providers)');
 }
@@ -461,12 +558,8 @@ function cmdCost(flags: Flags): void {
     return;
   }
 
-  const rows = models
-    .map((m) => ({ model: m, usd: cost(m, inputTokens, outputTokens) }))
-    .sort((a, b) => a.usd - b.usd);
-  for (const row of rows) {
-    console.log(`${row.usd.toFixed(4)}  ${row.model.tier.padEnd(7)} ${row.model.id}`);
-  }
+  const rows = models.map((m) => ({ model: m, usd: cost(m, inputTokens, outputTokens) })).sort((a, b) => a.usd - b.usd);
+  for (const row of rows) console.log(`${row.usd.toFixed(4)}  ${row.model.tier.padEnd(7)} ${row.model.id}`);
 }
 
 async function cmdPort(flags: Flags): Promise<void> {
@@ -522,7 +615,9 @@ function cmdSession(action: string | undefined, positional: string[], flags: Fla
 function cmdAudit(flags: Flags): void {
   const entries = readAudit(str(flags, 'n') ? Number(str(flags, 'n')) : 50);
   for (const entry of entries) {
-    console.log(`${new Date(entry.ts).toISOString()}  ${entry.event.padEnd(10)} ${(entry.agent ?? '').padEnd(8)} ${entry.detail ?? ''}`);
+    console.log(
+      `${new Date(entry.ts).toISOString()}  ${entry.event.padEnd(10)} ${(entry.agent ?? '').padEnd(8)} ${entry.detail ?? ''}`,
+    );
   }
 }
 
@@ -532,29 +627,159 @@ function cmdContext(): void {
   if (block) console.log(block);
 }
 
+function agentLabel(agent: AgentConfig): string {
+  return `${agent.name.padEnd(10)} ${agent.command.padEnd(16)} model: ${agent.model ?? '(default)'}`;
+}
+
+async function handleSlash(self: string, line: string): Promise<'quit' | void> {
+  const slash = parseSlash(line);
+  if (!slash) {
+    if (line.trim()) console.log('commands start with / — try /help');
+    return;
+  }
+
+  const [first, second, ...rest] = slash.args;
+  switch (slash.name) {
+    case 'help':
+      console.log(slashHelp());
+      break;
+    case 'status':
+      await cmdStatus({});
+      break;
+    case 'agents':
+      for (const agent of loadConfig().agents) console.log(agentLabel(agent));
+      break;
+    case 'send': {
+      if (!first || !second) {
+        console.log('usage: /send <to> [type] <text>');
+        break;
+      }
+      const isType = (MESSAGE_TYPES as readonly string[]).includes(second);
+      const type = (isType ? second : 'fyi') as MessageType;
+      const summary = isType ? rest.join(' ') : [second, ...rest].join(' ');
+      if (!summary) {
+        console.log('nothing to send');
+        break;
+      }
+      const stored = await deliver(prepare({ from: self, to: first, type, summary }));
+      console.log(`${stored.id}  ${self} -> ${first}  ${type}`);
+      break;
+    }
+    case 'inbox': {
+      const agent = first ?? self;
+      const messages = await collectInbox(agent, 0, false);
+      printMessages(messages, false);
+      if (messages.length === 0) console.log(`(no messages for ${agent})`);
+      break;
+    }
+    case 'cmd': {
+      if (!first || !second) {
+        console.log('usage: /cmd <agent> <directive>');
+        break;
+      }
+      await cmdCmd({ from: self } as Flags, [first, [second, ...rest].join(' ')]);
+      break;
+    }
+    case 'model': {
+      if (!first || !second) {
+        console.log('usage: /model <agent> <model>');
+        break;
+      }
+      const config = loadConfig();
+      const target = config.agents.find((a) => a.name === first);
+      if (!target) {
+        console.log(`unknown agent: ${first}`);
+        break;
+      }
+      target.model = second;
+      saveConfig(config);
+      await cmdCmd({ from: self } as Flags, [first, `model=${second}`]);
+      console.log(`${first} will launch with ${target.modelFlag ?? '--model'} ${second}`);
+      break;
+    }
+    case 'resume':
+      if (!first) {
+        console.log('usage: /resume <agent>');
+        break;
+      }
+      await cmdCmd({ from: self } as Flags, [first, 'resume']);
+      break;
+    case 'run': {
+      if (!first) {
+        console.log('usage: /run <agent> <prompt>');
+        break;
+      }
+      cmdRun({} as Flags, [first, ...[second, ...rest].filter((v): v is string => Boolean(v))]);
+      break;
+    }
+    case 'context':
+      cmdContext();
+      break;
+    case 'kill':
+      await cmdKill();
+      break;
+    case 'quit':
+    case 'exit':
+      return 'quit';
+    default:
+      console.log(`unknown command: /${slash.name} (try /help)`);
+  }
+}
+
+async function cmdConsole(flags: Flags): Promise<void> {
+  const self = resolveSelf(flags);
+  const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: 'baton> ' });
+  console.log(`baton console — you are "${self}". /help for commands, /quit to exit.`);
+  rl.prompt();
+
+  let done = false;
+  await new Promise<void>((resolve) => {
+    let chain: Promise<void> = Promise.resolve();
+    rl.on('line', (line) => {
+      chain = chain.then(async () => {
+        if (done) return;
+        const result = await handleSlash(self, line);
+        if (result === 'quit') {
+          done = true;
+          rl.close();
+          return;
+        }
+        if (!done) rl.prompt();
+      });
+    });
+    rl.on('close', () => {
+      done = true;
+      resolve();
+    });
+  });
+}
+
 function usage(): void {
   console.log(`baton — pass the work between AI coding agents
 
 usage: baton <command> [options]
 
-relay
+setup
   init                       create ~/.baton and a starter config
-  up                         launch the agents and the daemon (--dry-run to preview)
-  down                       stop the daemon
-  kill                       stop the daemon and every agent
-  daemon                     run batond in the foreground
-  mcp                        run the MCP server on stdio
+  doctor [--install]         check node/splitter setup, optionally install one
+  install                    install the terminal multiplexer for this platform
+  up / down / kill           launch agents + daemon / stop daemon / stop everything
+  splitters                  show available terminal splitters
+
+relay
+  console                    interactive console with slash commands (/help)
   send                       send a message to another agent
+  cmd <agent> <directive>    send a control directive (model=…, resume, stop, …)
+  commands                   list control directives
   inbox                      read your inbox (marks read unless --peek)
   ack [id]                   acknowledge up to a message (or all)
   watch                      stream new messages
-  status                     agents, pending counts, chosen splitter
-  log                        show the last messages (--n 20)
-  logs [agent]               tail background agent logs
-  splitters                  show available terminal splitters
+  run <agent> [prompt]       run an agent headlessly (--model, --resume, --dry-run)
+  status / log / logs        observe
+  daemon / mcp               run batond / the MCP server
 
 agent quality
-  context                    print the protocol + saved memory (inject at session start)
+  context                    protocol + saved memory (inject at session start)
   instructions               print the handoff protocol
   remember "<text>"          keep a fact across sessions
   recall [query]             list memory
@@ -567,11 +792,8 @@ agent quality
   session [save <n> <f>|show <n>|list]   reuse a logged-in browser session
   audit                      show the guardrail/audit log
 
-send options
-  --to <agent>  --summary <text>  --type <type>  --priority <p>
-  --body <text>  --next <action>  --built <path>  --attach <path>
-  --in-reply-to <id>  --hop <n>  --input <json|@file|->
-
+send options: --to --summary --type --priority --body --next --built --attach
+              --in-reply-to --hop --input
 common: --agent <name>  --json
 `);
 }
@@ -584,6 +806,12 @@ async function main(): Promise<void> {
   switch (command) {
     case 'init':
       cmdInit(flags);
+      break;
+    case 'doctor':
+      cmdDoctor(flags);
+      break;
+    case 'install':
+      cmdInstall();
       break;
     case 'up':
       await cmdUp(flags);
@@ -604,8 +832,20 @@ async function main(): Promise<void> {
       mcpMain();
       break;
     }
+    case 'console':
+      await cmdConsole(flags);
+      break;
     case 'send':
       await cmdSend(flags);
+      break;
+    case 'cmd':
+      await cmdCmd(flags, positional);
+      break;
+    case 'commands':
+      console.log(directiveHelp());
+      break;
+    case 'run':
+      cmdRun(flags, positional);
       break;
     case 'inbox':
       await cmdInbox(flags);

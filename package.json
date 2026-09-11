@@ -7,6 +7,14 @@
   "bin": {
     "baton": "./src/cli/index.ts"
   },
+  "files": [
+    "src",
+    "adapters",
+    "docs",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22.6"
   },
@@ -14,12 +22,17 @@
     "baton": "node src/cli/index.ts",
     "test": "node --test \"test/**/*.test.ts\""
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mxgamecoder/baton.git"
+  },
   "keywords": [
     "ai",
     "agents",
     "relay",
     "mcp",
     "cli",
-    "multi-agent"
+    "multi-agent",
+    "tmux"
   ]
 }

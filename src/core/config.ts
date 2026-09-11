@@ -7,6 +7,9 @@ export interface AgentConfig {
   command: string;
   provider?: string;
   model?: string;
+  modelFlag?: string;
+  resumeFlag?: string;
+  headless?: string;
   env?: Record<string, string>;
 }
 
@@ -23,8 +26,21 @@ export const DEFAULT_MAX_HOP = 8;
 export function defaultConfig(): BatonConfig {
   return {
     agents: [
-      { name: 'oc', command: 'opencode', provider: 'opencode' },
-      { name: 'cc', command: 'cmd', provider: 'command-code' },
+      {
+        name: 'oc',
+        command: 'opencode',
+        provider: 'opencode',
+        modelFlag: '--model',
+        headless: 'opencode run "{prompt}"',
+      },
+      {
+        name: 'cc',
+        command: 'cmd',
+        provider: 'command-code',
+        modelFlag: '--model',
+        resumeFlag: '--continue',
+        headless: 'cmd -p "{prompt}"',
+      },
     ],
     port: DEFAULT_PORT,
     maxHop: DEFAULT_MAX_HOP,

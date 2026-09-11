@@ -39,6 +39,22 @@ baton watch            # stream new messages
 
 **Check your inbox at the end of every turn before you call yourself finished.**
 
+### Control directives
+
+The coordinator can steer you with a `command` message (read it from your inbox and apply it):
+
+| Directive | Meaning |
+|-----------|---------|
+| `model=<name>` | switch to a cheaper/other model for the next step |
+| `effort=<low\|medium\|high>` | reasoning effort |
+| `resume` | continue your previous work |
+| `think` | allow deeper reasoning |
+| `stop` | stop the current task |
+| `remember=<text>` | store something in memory |
+
+From the coordinator side: `baton cmd <agent> "model=deepseek-chat"`, or in the console
+`/model <agent> <model>`.
+
 ## Rules
 
 1. **Verify before coding.** If a bug is reported, reproduce it and attach evidence
