@@ -112,6 +112,7 @@ const COMMANDS: Command[] = [
   { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
   { group: 'baton', label: 'copy', detail: 'copy the last reply' },
   { group: 'baton', label: 'menu', detail: 'menu: copy, or open the other agent' },
+  { group: 'baton', label: 'split', detail: 'add the other agent pane back' },
   { group: 'baton', label: 'context', detail: 'protocol and memory' },
   { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
 
@@ -403,9 +404,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   const ui: ChatUi = {
     user(text) {
+      addNode(new TextRenderable(renderer, { content: '', fg: theme.dim, height: 1, flexShrink: 0 }));
       addNode(
         new TextRenderable(renderer, { content: `you  ›  ${text}`, fg: theme.user, wrapMode: 'word', selectable: true }),
       );
+      addNode(new TextRenderable(renderer, { content: '', fg: theme.dim, height: 1, flexShrink: 0 }));
     },
     assistant() {
       addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
@@ -1176,6 +1179,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     if (name === 'memory') return openInfo('Memory', memoryLines());
     if (name === 'tasks') return openInfo('Tasks', formatTaskList(session.info().id));
+    if (name === 'split' || name === 'panes') {
+      const result = ensurePanes(loadConfig());
+      ui.line(result.message, result.added > 0 ? theme.user : theme.dim);
+      return;
+    }
     if (name === 'menu') {
       openMenu();
       return;
@@ -1483,18 +1491,20 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
   }
 
-  renderer.on('selection' as never, () => {
+  const onSelection = (): void => {
     try {
       const text = (renderer as unknown as { getSelectedText?: () => string }).getSelectedText?.();
       if (!text || !text.trim()) return;
-      if (Date.now() - lastCopiedAt < 800) return;
+      if (Date.now() - lastCopiedAt < 500) return;
       lastCopiedAt = Date.now();
       copyToClipboard(text);
       ui.line('copied', theme.user);
     } catch {
       /* selection copy is best effort */
     }
-  });
+  };
+  renderer.on('selection' as never, onSelection);
+  renderer.on('selectionChanged' as never, onSelection);
 
   const TIPS = [
     'right-click (or ctrl+o) opens a menu: copy, or open the other agent',
