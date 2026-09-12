@@ -85,6 +85,7 @@ export interface Session {
   setMode(mode: AgentMode): void;
   oneShot(prompt: string): Promise<string>;
   compact(): Promise<{ before: number; after: number; summary: string }>;
+  toolLabel(call: ToolCall): { text: string; color: string };
   listSessions(): SessionRecord[];
   resume(id: string): boolean;
   newSession(): void;
@@ -493,6 +494,7 @@ export function createSession(options: SessionOptions): Session {
       return result.finalText;
     },
     compact,
+    toolLabel,
     listSessions: () => listSessionRecords(),
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {

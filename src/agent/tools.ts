@@ -77,6 +77,16 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: 'spawn_agent',
+    description:
+      'Launch a read-only search sub-agent with its own context to investigate one question and report back. Use several at once when you need to find something everywhere (every use of a symbol, a string, a pattern) and let each one report what it found.',
+    parameters: {
+      type: 'object',
+      properties: { prompt: { type: 'string', description: 'what the sub-agent must find out' } },
+      required: ['prompt'],
+    },
+  },
+  {
     name: 'web_search',
     description:
       'Search the web for current information you do not have (news, docs, versions, prices). Returns titles, urls and snippets.',
@@ -215,7 +225,7 @@ function walk(root: string, limit = MAX_WALK): string[] {
   return found;
 }
 
-const WRITE_TOOLS = ['write_file', 'edit_file', 'shell'];
+const WRITE_TOOLS = ['write_file', 'edit_file', 'shell', 'spawn_agent'];
 export const READ_ONLY_TOOLS: ToolSpec[] = TOOLS.filter((tool) => !WRITE_TOOLS.includes(tool.name));
 
 function stripHtml(html: string): string {
@@ -271,6 +281,29 @@ async function webFetch(url: string): Promise<string> {
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
     switch (name) {
+      case 'spawn_agent': {
+        if (process.env.BATON_SUBAGENT === '1') {
+          return { output: 'a sub-agent cannot spawn more sub-agents', isError: true };
+        }
+        const task = String(args.prompt ?? '').trim();
+        if (!task) return { output: 'spawn_agent needs a prompt', isError: true };
+        const entry = process.argv[1];
+        if (!entry) return { output: 'cannot locate the baton entry point', isError: true };
+        const brief = `You are a read-only search sub-agent. Investigate and report findings with file paths and line numbers. Do not modify any files.\n\n${task}`;
+        const spawned = spawnSync(process.execPath, [entry, 'ask', brief, '--yes'], {
+          cwd: ctx.cwd,
+          encoding: 'utf8',
+          timeout: 240_000,
+          maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env, BATON_SUBAGENT: '1', BATON_AGENT: 'sub' },
+        });
+        if (spawned.error) return { output: `sub-agent failed: ${spawned.error.message}`, isError: true };
+        const report = `${spawned.stdout ?? ''}${spawned.stderr ? `\n${spawned.stderr}` : ''}`.trim();
+        return {
+          output: truncate(report || 'the sub-agent reported nothing'),
+          isError: spawned.status !== 0,
+        };
+      }
       case 'read_file': {
         const path = resolvePath(ctx.cwd, String(args.path ?? ''));
         if (!existsSync(path)) return { output: `no such file: ${path}`, isError: true };

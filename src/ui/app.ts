@@ -1135,10 +1135,20 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           const text = typeof message.content === 'string' ? message.content : '';
           if (message.role === 'user') {
             ui.user(text);
-          } else if (message.role === 'assistant' && text) {
-            const turn = ui.assistant();
-            turn.set(text);
-            turn.done();
+          } else if (message.role === 'tool') {
+            ui.line(`   └ ${text.split('\n')[0].slice(0, 120)}`, '#565672');
+          } else if (message.role === 'assistant') {
+            for (const call of message.toolCalls ?? []) {
+              const label = session.toolLabel(call);
+              ui.line(label.text, label.color);
+            }
+            if (text.startsWith('[request failed]')) {
+              ui.wrap(text, theme.error);
+            } else if (text) {
+              const turn = ui.assistant();
+              turn.set(text);
+              turn.done();
+            }
           }
         }
         ui.setModel(session.model());
