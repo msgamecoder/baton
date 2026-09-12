@@ -10,14 +10,28 @@ import type { Provider } from '../providers/registry.ts';
  * requires every `tool_calls` entry to be answered by a tool message with a
  * matching, unique `tool_call_id`. Give every call a stable id up front.
  */
-export function withStableIds(calls: ToolCall[]): ToolCall[] {
-  const seen = new Set<string>();
+export function withStableIds(calls: ToolCall[], used: Set<string> = new Set()): ToolCall[] {
   return calls.map((call) => {
     let id = call.id;
-    if (!id || seen.has(id)) id = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
-    seen.add(id);
+    // a missing id, or one the conversation already used (some gateways reuse ids),
+    // is replaced — the strict rule wants a unique id per tool call
+    if (!id || used.has(id)) id = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    used.add(id);
     return { ...call, id };
   });
+}
+
+/** Every tool-call id already present in the conversation. */
+function usedToolIds(messages: ChatMessage[]): Set<string> {
+  const used = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? []) if (call.id) used.add(call.id);
+    } else if (message.role === 'tool' && message.toolCallId) {
+      used.add(message.toolCallId);
+    }
+  }
+  return used;
 }
 
 export interface TurnEvents {
@@ -98,7 +112,14 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
         next += 1;
       }
       const answered = new Set(run.map((entry) => entry.toolCallId));
-      const kept = message.toolCalls.filter((call) => answered.has(call.id));
+      const seen = new Set<string>();
+      // a call with no id (older history) or a repeated id can never satisfy the
+      // pairing rule, so it is dropped rather than sent
+      const kept = message.toolCalls.filter((call) => {
+        if (!call.id || seen.has(call.id) || !answered.has(call.id)) return false;
+        seen.add(call.id);
+        return true;
+      });
       if (!kept.length && !message.content) continue;
       out.push(kept.length ? { ...message, toolCalls: kept } : { role: 'assistant', content: message.content });
       continue;
@@ -144,7 +165,7 @@ export async function runTurn(
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
 
-    const toolCalls = withStableIds(result.toolCalls);
+    const toolCalls = withStableIds(result.toolCalls, usedToolIds(history));
     history.push({
       role: 'assistant',
       content: result.text,

@@ -82,10 +82,41 @@ test('tool calls get stable, unique ids so the protocol pairing holds', async ()
   assert.notEqual(dupes[0].id, dupes[1].id, 'a repeated id is replaced');
 
   assert.equal(withStableIds([{ id: 'call_1', name: 'x', arguments: '{}' }])[0].id, 'call_1');
+
+  // an id the conversation already used is replaced (some gateways reuse ids)
+  const reused = withStableIds([{ id: 'repeat', name: 'a', arguments: '{}' }], new Set(['repeat']));
+  assert.notEqual(reused[0].id, 'repeat');
+});
+
+test('a selection reads its text from the renderables it covers', async () => {
+  const { selectionText } = await import('../src/ui/selection.ts');
+  assert.equal(
+    selectionText({ selectedRenderables: [{ getSelectedText: () => 'hello' }, { getSelectedText: () => 'world' }] }),
+    'hello\nworld',
+  );
+  assert.equal(selectionText({ selectedRenderables: [{}, { getSelectedText: () => '' }] }), '');
+  assert.equal(
+    selectionText({
+      selectedRenderables: [
+        {
+          getSelectedText: () => {
+            throw new Error('gone');
+          },
+        },
+      ],
+    }),
+    '',
+  );
+  assert.equal(selectionText(null), '');
+  assert.equal(selectionText(undefined), '');
+  assert.equal(selectionText({}), '');
 });
 
 test('wide tables wrap inside their cells and fit the width', async () => {
-  const { formatTables } = await import('../src/core/tables.ts');
+  const { formatTables, wrapLines } = await import('../src/core/tables.ts');
+  const wrapped = wrapLines('one two three four five six seven eight nine ten', 12).split('\n');
+  assert.ok(wrapped.length > 1, 'long text is wrapped');
+  assert.ok(wrapped.every((line) => line.length <= 12), 'no line exceeds the width');
   const markdown = [
     '| Criteria | HTML (+CSS/JS) | React |',
     '|---|---|---|',

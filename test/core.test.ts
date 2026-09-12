@@ -150,6 +150,21 @@ test('history sanitizer leaves a complete exchange untouched', async () => {
   assert.deepEqual(sanitizeHistory(input), input);
 });
 
+test('history sanitizer drops tool calls with no id', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const cleaned = sanitizeHistory([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '', toolCalls: [{ id: '', name: 'shell', arguments: '{}' }] },
+    { role: 'tool', content: 'out', toolCallId: '', name: 'shell' },
+    { role: 'assistant', content: 'done' },
+  ]);
+  // the unrepeatable pairing (empty id) is removed, everything else survives
+  assert.deepEqual(
+    cleaned.map((message) => message.role),
+    ['user', 'assistant'],
+  );
+});
+
 test('history sanitizer drops an unanswered call with no text', async () => {
   const { sanitizeHistory } = await import('../src/agent/loop.ts');
   const cleaned = sanitizeHistory([

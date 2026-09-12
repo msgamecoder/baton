@@ -27,7 +27,7 @@ const stripInline = (text: string): string =>
 
 const pad = (text: string, width: number): string => text + ' '.repeat(Math.max(0, width - text.length));
 
-function wrapCell(text: string, width: number): string[] {
+export function wrapCell(text: string, width: number): string[] {
   const words = text.split(/\s+/).filter((word) => word.length > 0);
   if (words.length === 0) return [''];
   const lines: string[] = [];
@@ -51,6 +51,14 @@ function wrapCell(text: string, width: number): string[] {
   }
   if (current) lines.push(current);
   return lines.length ? lines : [''];
+}
+
+/** Wrap plain text to `width` columns, line by line, so a renderer does not have to guess. */
+export function wrapLines(text: string, width: number): string {
+  return text
+    .split('\n')
+    .flatMap((line) => (line ? wrapCell(line, Math.max(8, width)) : ['']))
+    .join('\n');
 }
 
 /**

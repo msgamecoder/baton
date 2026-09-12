@@ -15,7 +15,8 @@ import {
 } from '@opentui/core';
 import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
 import { protocolText } from '../core/instructions.ts';
-import { formatTables } from '../core/tables.ts';
+import { formatTables, wrapLines } from '../core/tables.ts';
+import { selectionText } from './selection.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { agentAliases, agentLabel as formatAgent, loadConfig, resolveAgent, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
@@ -597,10 +598,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     recordTool(title, output) {
       toolLog.push({ title, output });
       if (toolLog.length > 60) toolLog.shift();
-      if (expandedNode) {
-        expandedNode.destroyRecursively();
-        expandedNode = null;
-      }
+      clearExpanded();
     },
     markdown(text, color) {
       segmentBreak = true;
@@ -647,6 +645,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
     },
     ask: (question: string, options: string[]) => openQuestion(question, options),
+  };
+
+  // an error prints as one line and can be expanded with ctrl+o, like tool output
+  const showError = (label: string, detail: string): void => {
+    const text = detail || 'error';
+    ui.recordTool?.(label, text);
+    ui.line(`${label}: ${text.split('\n')[0]}`, theme.error);
+    ui.line('   ·   ctrl+o shows the full error', theme.dim);
   };
 
   const run = (command: string): string =>
@@ -980,7 +986,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       const file = session.exportSession(format, name || `session-${session.info().id}`);
       ui.line(`exported → ${file}`, theme.user);
     } catch (error) {
-      ui.line(`export failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+      showError('export failed', error instanceof Error ? error.message : 'error');
     }
     setFooter();
   };
@@ -1429,7 +1435,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         const result = await session.compact();
         ui.line(`compacted ${result.before} → ${result.after} messages`, theme.user);
       } catch (error) {
-        ui.line(`compact failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+        showError('compact failed', error instanceof Error ? error.message : 'error');
       }
       setFooter();
       return;
@@ -1483,7 +1489,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         ui.line(`learned ${saved.length} fact(s)`, theme.user);
         for (const entry of saved.slice(0, 20)) ui.line(`  · ${entry.text}`, theme.dim);
       } catch (error) {
-        ui.line(`learn failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+        showError('learn failed', error instanceof Error ? error.message : 'error');
       }
       return;
     }
@@ -1637,17 +1643,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     try {
       handleKey(key);
     } catch (error) {
-      ui.line(`key handling failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+      showError('key handling failed', error instanceof Error ? error.message : 'error');
     }
   });
 
   const toolLog: Array<{ title: string; output: string }> = [];
-  let expandedNode: TextRenderable | null = null;
+  let expandedNodes: Renderable[] = [];
 
+  const clearExpanded = (): void => {
+    for (const node of expandedNodes) node.destroyRecursively();
+    expandedNodes = [];
+  };
+
+  // ctrl+o expands the last tool result or error. Each line is its own node so a
+  // long message cannot be clipped by a wrapped node's measured height.
   const toggleLastTool = (): void => {
-    if (expandedNode) {
-      expandedNode.destroyRecursively();
-      expandedNode = null;
+    if (expandedNodes.length) {
+      clearExpanded();
       return;
     }
     const last = toolLog[toolLog.length - 1];
@@ -1655,13 +1667,29 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       ui.line('nothing to expand yet — run something first', theme.dim);
       return;
     }
-    expandedNode = new TextRenderable(renderer, {
-      content: `${last.title}\n${last.output.trim() || '(no output)'}`,
-      fg: theme.dim,
-      wrapMode: 'word',
-      flexShrink: 0,
-    });
-    addNode(expandedNode);
+    const lines = wrapLines(`${last.title}\n${last.output.trim() || '(no output)'}`, contentWidth()).split('\n');
+    for (const line of lines.slice(0, 400)) {
+      const node = new TextRenderable(renderer, {
+        content: line,
+        fg: theme.dim,
+        height: 1,
+        flexShrink: 0,
+        selectable: true,
+        truncate: true,
+      });
+      expandedNodes.push(node);
+      addNode(node);
+    }
+    if (lines.length > 400) {
+      const more = new TextRenderable(renderer, {
+        content: `… ${lines.length - 400} more lines`,
+        fg: theme.dim,
+        height: 1,
+        flexShrink: 0,
+      });
+      expandedNodes.push(more);
+      addNode(more);
+    }
   };
 
   const quitApp = (): void => {
@@ -1887,7 +1915,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'request failed';
-        ui.wrap(`error: ${message}`, theme.error);
+        showError('error', message);
         ui.line('', theme.dim);
         ui.markdown(
           '**Type "continue" to try again.** If the issue persists, open an issue: https://github.com/msgamecoder/baton/issues',
@@ -1908,8 +1936,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   const onSelection = (): void => {
     try {
-      const text = (renderer as unknown as { getSelectedText?: () => string }).getSelectedText?.();
-      if (!text || !text.trim()) return;
+      // OpenTUI has no renderer.getSelectedText() — the text lives on the
+      // renderables the selection covers, which the selection carries
+      const selection = (renderer as unknown as { getSelection?: () => unknown }).getSelection?.();
+      const text = selectionText(selection);
+      if (!text.trim()) return;
       if (Date.now() - lastCopiedAt < 500) return;
       lastCopiedAt = Date.now();
       copyToClipboard(text);
@@ -1979,7 +2010,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     try {
       await session.handle(instruction, ui);
     } catch (error) {
-      ui.line(`auto-continue failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+      showError('auto-continue failed', error instanceof Error ? error.message : 'error');
     } finally {
       busy = false;
       setFooter();

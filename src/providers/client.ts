@@ -215,8 +215,9 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
     const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
     if (!response.ok || !response.body) {
       const detail = await response.text().catch(() => '');
+      const shown = detail.length > 4000 ? `${detail.slice(0, 4000)}…` : detail;
       const error = new Error(
-        `${provider.name} returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+        `${provider.name} returned HTTP ${response.status}${shown ? `: ${shown}` : ''}`,
       ) as Error & { status?: number };
       error.status = response.status;
       throw error;
