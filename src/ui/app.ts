@@ -267,8 +267,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     backgroundColor: theme.bg,
     screenMode: 'alternate-screen',
     targetFps: 60,
-    useMouse: false,
-    enableMouseMovement: false,
+    useMouse: true,
+    enableMouseMovement: true,
   });
 
   const assertTitle = (): void => {
@@ -365,9 +365,26 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   overlay.add(dialog);
   renderer.root.add(overlay);
 
+  const viewportHeight = (): number => {
+    const box = scroll.viewport as unknown as { height?: number } | undefined;
+    return Math.max(4, Number(box?.height ?? 24));
+  };
+
+  const atBottom = (): boolean => {
+    try {
+      return scroll.scrollTop + viewportHeight() >= scroll.scrollHeight - 2;
+    } catch {
+      return true;
+    }
+  };
+
+  const keepBottom = (): void => {
+    if (atBottom()) scroll.scrollTo(scroll.scrollHeight);
+  };
+
   const addNode = (node: Renderable): void => {
     scroll.content.add(node);
-    scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+    keepBottom();
   };
 
   let thinkingOn = true;
@@ -402,6 +419,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const startThinking = (keepStart = false): void => {
     if (thinkingTimer) clearInterval(thinkingTimer);
     thinkingTimer = null;
+    scroll.scrollTo(scroll.scrollHeight);
     if (!keepStart || !turnStarted) turnStarted = Date.now();
     if (!thinkingOn) return;
     const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
@@ -481,7 +499,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         }
         if (node instanceof MarkdownRenderable) node.content = buffer;
         else node.content = normalize(buffer);
-        scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+        keepBottom();
       };
       const fresh = (): void => {
         if (!segmentBreak) return;
@@ -1450,7 +1468,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       return;
     }
     if (mode === 'file') {
-      query = value.slice(value.lastIndexOf('@') + 1);
+      const token = value.slice(value.lastIndexOf('@') + 1);
+      if (!value.includes('@') || /\s/.test(token)) {
+        closeModal();
+        return;
+      }
+      query = token;
       openFiles();
       return;
     }
@@ -1477,8 +1500,15 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     const at = value.lastIndexOf('@');
     if (at >= 0) {
-      query = value.slice(at + 1);
+      const token = value.slice(at + 1);
+      if (/\s/.test(token)) {
+        if (mode === 'file') closeModal();
+        return;
+      }
+      query = token;
       openFiles();
+    } else if (mode === 'file') {
+      closeModal();
     }
   });
 
@@ -1515,6 +1545,22 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     if (key?.ctrl && key?.name === 'o') {
       if (!mode && !inputPurpose) openMenu();
+      return;
+    }
+    if (key?.name === 'pageup' || (key?.ctrl && key?.name === 'u')) {
+      scroll.scrollBy(-Math.max(4, Math.floor(viewportHeight() / 2)));
+      return;
+    }
+    if (key?.name === 'pagedown' || (key?.ctrl && key?.name === 'd')) {
+      scroll.scrollBy(Math.max(4, Math.floor(viewportHeight() / 2)));
+      return;
+    }
+    if (key?.ctrl && key?.name === 'home') {
+      scroll.scrollTo(0);
+      return;
+    }
+    if (key?.ctrl && key?.name === 'end') {
+      scroll.scrollTo(scroll.scrollHeight);
       return;
     }
     if (key?.ctrl && key?.name === 'v') {
