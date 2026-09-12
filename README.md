@@ -164,11 +164,15 @@ baton status / log / logs / kill
 
 ## Config (`~/.baton/config.json`)
 
+Each agent has a unique `name` and a `role` (`left` / `right`, the pane it lives in). You can
+address it by either — `baton send --to Nova` or `baton send --to left` — and the UI shows
+both, as `Nova · left`. The setup wizard asks for the two names.
+
 ```json
 {
   "agents": [
-    { "name": "left",  "provider": "command-code", "model": "claude-sonnet-4-6" },
-    { "name": "right", "provider": "deepseek",     "model": "deepseek-chat" }
+    { "name": "Nova", "role": "left",  "provider": "command-code", "model": "claude-sonnet-4-6" },
+    { "name": "Rex",  "role": "right", "provider": "deepseek",     "model": "deepseek-chat" }
   ],
   "defaultProvider": "command-code",
   "defaultModel": "claude-sonnet-4-6",

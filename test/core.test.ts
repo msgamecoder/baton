@@ -77,6 +77,19 @@ test('log: append, inbox, cursor advance, broadcast, no self-delivery', () => {
   assert.equal(readMessages().length, 3);
 });
 
+test('relay inbox matches an agent by role as well as name', () => {
+  appendMessage(validateMessage({ from: 'peer', to: 'left', summary: 'by role' }));
+  appendMessage(validateMessage({ from: 'peer', to: 'Nova', summary: 'by name' }));
+  appendMessage(validateMessage({ from: 'peer', to: 'somebody-else', summary: 'not mine' }));
+  appendMessage(validateMessage({ from: 'left', to: 'Nova', summary: 'from myself' }));
+
+  const summaries = inbox('Nova', { ts: 0, id: '' }, ['left']).map((m) => m.summary);
+  assert.ok(summaries.includes('by role'), 'a message addressed by role must arrive');
+  assert.ok(summaries.includes('by name'), 'a message addressed by name must arrive');
+  assert.ok(!summaries.includes('not mine'), 'someone else\'s message must not arrive');
+  assert.ok(!summaries.includes('from myself'), 'my own alias must not deliver to me');
+});
+
 test('provider session header follows the baton session, not the process', async () => {
   const { providerHeaders, setProviderSession } = await import('../src/providers/client.ts');
   const provider = {

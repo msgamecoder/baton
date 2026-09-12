@@ -4,12 +4,11 @@ import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
   BoxRenderable,
-  InputRenderable,
-  InputRenderableEvents,
   MarkdownRenderable,
   ScrollBoxRenderable,
   SyntaxStyle,
   TextRenderable,
+  TextareaRenderable,
   createCliRenderer,
   type CliRenderer,
   type Renderable,
@@ -18,7 +17,7 @@ import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
 import { protocolText } from '../core/instructions.ts';
 import { formatTables } from '../core/tables.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
-import { loadConfig, saveConfig } from '../core/config.ts';
+import { agentAliases, agentLabel as formatAgent, loadConfig, resolveAgent, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { memoryBlock, memoryLines, rememberFact, type MemoryEntry } from '../core/memory.ts';
@@ -78,6 +77,7 @@ export interface ChatUi {
 export interface ChatAppOptions {
   session: Session;
   agent: string;
+  agentLabel?: string;
   providerName: string;
   version: string;
   model: string;
@@ -294,6 +294,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     /* nothing: the renderer owns the terminal, the title is set via tmux */
   };
 
+  // "Nova · left" — the agent's name and the pane it lives in
+  const selfLabel = ((): string => {
+    if (options.agentLabel) return options.agentLabel;
+    const agent = resolveAgent(loadConfig().agents, options.agent);
+    return agent ? formatAgent(agent) : options.agent;
+  })();
+  const selfAliases = ((): string[] => agentAliases(loadConfig().agents, options.agent))();
+
   const root = new BoxRenderable(renderer, {
     id: 'root',
     width: '100%',
@@ -310,7 +318,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   header.add(new ASCIIFontRenderable(renderer, { id: 'wordmark', text: 'BATON', font: 'tiny', color: theme.accent }));
   const subtitle = new TextRenderable(renderer, {
     id: 'subtitle',
-    content: `${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
+    content: `${selfLabel}   ·   ${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
     fg: theme.dim,
   });
   header.add(subtitle);
@@ -333,7 +341,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     id: 'inputbox',
     border: true,
     borderColor: theme.accent,
-    height: 3,
+    height: 'auto',
+    minHeight: 3,
     flexShrink: 0,
     marginTop: 1,
     paddingLeft: 1,
@@ -341,16 +350,33 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     title: ' message ',
     titleAlignment: 'left',
   });
-  const input = new InputRenderable(renderer, {
+  // A textarea, not the single-line input: long paths/URLs wrap instead of running
+  // off the box. Enter submits (the submit action); shift+enter adds a newline.
+  const input = new TextareaRenderable(renderer, {
     id: 'input',
     flexGrow: 1,
+    minHeight: 1,
+    maxHeight: 6,
+    wrapMode: 'word',
     placeholder: 'Ask anything…    /  commands    @  files',
     backgroundColor: theme.bg,
     textColor: theme.text,
     placeholderColor: theme.dim,
+    keyBindings: [
+      { name: 'return', action: 'submit' },
+      { name: 'kpenter', action: 'submit' },
+      { name: 'linefeed', action: 'submit' },
+      { name: 'return', shift: true, action: 'newline' },
+    ],
   });
   inputBox.add(input);
   root.add(inputBox);
+
+  const inputText = (): string => input.plainText;
+  const setInput = (text: string): void => {
+    input.setText(text);
+    input.cursorOffset = text.length;
+  };
 
   const footer = new TextRenderable(renderer, { id: 'footer', content: '', fg: theme.dim, flexShrink: 0 });
   root.add(footer);
@@ -956,7 +982,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     inputPurpose = purpose;
     inputBox.title = ` ${boxTitle} `;
     input.placeholder = placeholder;
-    input.value = '';
+    setInput('');
     input.focus();
   };
 
@@ -964,7 +990,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     inputPurpose = null;
     inputBox.title = ' message ';
     input.placeholder = 'Ask anything…    /  commands    @  files';
-    input.value = '';
+    setInput('');
     input.focus();
   };
 
@@ -1080,14 +1106,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (mode === 'command') {
       const command = row.value;
       closeModal();
-      input.value = '';
+      setInput('');
       if (command === 'provider') openProviders();
       else if (command === 'theme') openThemes();
       else if (command === 'model') void openModels();
       else if (command === 'sessions' || command === 'resume') openSessions();
       else if (command === 'export') openExport();
       else if (command === 'files') openFiles();
-      else if (['key', 'remember', 'send'].includes(command)) input.value = `/${command} `;
+      else if (['key', 'remember', 'send'].includes(command)) setInput(`/${command} `);
       else void dispatch(`/${command}`);
       input.focus();
       return;
@@ -1215,8 +1241,9 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
 
     if (mode === 'file') {
-      const at = input.value.lastIndexOf('@');
-      input.value = `${input.value.slice(0, at)}@${row.value} `;
+      const current = inputText();
+      const at = current.lastIndexOf('@');
+      setInput(`${current.slice(0, at)}@${row.value} `);
       closeModal();
       input.focus();
     }
@@ -1225,7 +1252,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const infoStatus = (): string[] => {
     const info = session.info();
     return [
-      `agent      ${options.agent}`,
+      `agent      ${selfLabel}`,
       `session    ${info.id}`,
       `provider   ${session.provider().id}  (${session.provider().format})`,
       `model      ${info.model}`,
@@ -1264,7 +1291,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       `config     ${CONFIG_PATH}`,
       `keys       ${keysFile()}`,
       `cwd        ${options.cwd}`,
-      `agents     ${config.agents.map((agent) => agent.name).join(', ')}`,
+      `agents     ${config.agents.map((agent) => formatAgent(agent)).join(', ')}`,
       `provider   ${session.provider().id}  (${session.provider().format})`,
       `model      ${session.model()}`,
       `hooks      ctrl+v paste   ·   @ files   ·   / commands`,
@@ -1488,8 +1515,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     await session.handle(line, ui);
   };
 
-  input.on(InputRenderableEvents.INPUT, () => {
-    const value = input.value;
+  const onInputChanged = (): void => {
+    const value = inputText();
     if (inputPurpose) return;
 
     if (mode === 'model') {
@@ -1545,7 +1572,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     } else if (mode === 'file') {
       closeModal();
     }
-  });
+  };
+
+  // The base textarea does not emit a change event the way the single-line input
+  // did, so drive the palettes from the keys and pastes it actually handles.
+  const inputHandleKeyPress = input.handleKeyPress.bind(input);
+  input.handleKeyPress = (key: any): boolean => {
+    const before = input.plainText;
+    const handled = inputHandleKeyPress(key);
+    // only react to keys that changed the text, so arrow keys keep navigating a palette
+    if (handled && input.plainText !== before) onInputChanged();
+    return handled;
+  };
+  const inputHandlePaste = input.handlePaste.bind(input);
+  input.handlePaste = (event: any): void => {
+    inputHandlePaste(event);
+    onInputChanged();
+  };
 
   renderer.keyInput.on('keypress', (key: any) => {
     try {
@@ -1601,7 +1644,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           '',
           `thanks — that was a good session with baton ${options.version}`,
           '',
-          `  agent      ${options.agent}`,
+          `  agent      ${selfLabel}`,
           `  session    ${info.id}`,
           `  messages   ${info.messages}`,
           `  tokens     ${formatTokens(totalTokens(info.usage))}`,
@@ -1653,13 +1696,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (key?.ctrl && key?.name === 'v') {
       const image = clipboardImage();
       if (image) {
-        input.value = `${input.value}@${image} `;
+        setInput(`${inputText()}@${image} `);
         ui.line(`pasted image → ${image}`, theme.dim);
         closeModal();
         return;
       }
       const text = clipboardText();
-      if (text) input.value = `${input.value}${text}`;
+      if (text) setInput(`${inputText()}${text}`);
       closeModal();
       return;
     }
@@ -1677,8 +1720,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         session.abort();
         return;
       }
-      if (key?.name === 'escape' && input.value) {
-        input.value = '';
+      if (key?.name === 'escape' && inputText()) {
+        setInput('');
       }
       return;
     }
@@ -1697,7 +1740,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       accept();
     } else if (key?.name === 'escape') {
       if (mode === 'question') cancelModal();
-      else closeModal();
+      else {
+        closeModal();
+        if (inputText()) setInput('');
+      }
     } else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
       const row = rows[index];
       if (row?.value) {
@@ -1720,14 +1766,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
   };
 
-  input.on(InputRenderableEvents.ENTER, () => {
+  input.onSubmit = (): void => {
     if (Date.now() - paletteHandledAt < 120) return;
     if (mode === 'question') {
       accept();
       return;
     }
-    const value = input.value;
-    input.value = '';
+    const value = inputText();
+    setInput('');
 
     if (inputPurpose) {
       const answer = value.trim();
@@ -1812,7 +1858,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         setFooter();
         input.focus();
       });
-  });
+  };
 
   const onSelection = (): void => {
     try {
@@ -1850,11 +1896,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     setFooter();
 
+    const isSelf = (ref: string | undefined): boolean => Boolean(ref) && selfAliases.includes(ref as string);
     const handoff = messages.find(
       (message) =>
-        (message.type === 'handoff' || message.type === 'question') &&
-        message.to === options.agent &&
-        message.from !== options.agent,
+        (message.type === 'handoff' || message.type === 'question') && isSelf(message.to) && !isSelf(message.from),
     );
     if (!handoff) return;
 

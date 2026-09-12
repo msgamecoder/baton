@@ -1,10 +1,21 @@
 import { appendMessage, getCursor, inbox, setCursor } from '../core/store.ts';
 import { validateMessage } from '../core/schema.ts';
 import { daemonUp, remoteAck, remoteInbox, remoteSend } from '../core/client.ts';
+import { agentAliases, loadConfig, resolveAgent } from '../core/config.ts';
 import type { Message } from '../core/schema.ts';
 
+function canonical(agents: ReturnType<typeof loadConfig>['agents'], ref: string): string {
+  return resolveAgent(agents, ref)?.name ?? ref;
+}
+
 export async function sendRelay(from: string, to: string, text: string, type = 'fyi'): Promise<Message> {
-  const message = validateMessage({ from, to, type, summary: text });
+  const agents = loadConfig().agents;
+  const message = validateMessage({
+    from: canonical(agents, from),
+    to: to === '*' ? '*' : canonical(agents, to),
+    type,
+    summary: text,
+  });
   if (await daemonUp()) {
     const sent = await remoteSend(message);
     if (sent) return sent;
@@ -18,7 +29,8 @@ export async function readRelayInbox(agent: string): Promise<Message[]> {
     const remote = await remoteInbox(agent, 0, false);
     if (remote) return remote;
   }
-  const messages = inbox(agent, getCursor(agent));
+  const aliases = agentAliases(loadConfig().agents, agent).filter((ref) => ref !== agent);
+  const messages = inbox(agent, getCursor(agent), aliases);
   const last = messages[messages.length - 1];
   if (last) setCursor(agent, { ts: last.ts, id: last.id });
   return messages;

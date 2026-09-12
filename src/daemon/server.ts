@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { loadConfig } from '../core/config.ts';
+import { agentAliases, loadConfig } from '../core/config.ts';
 import { appendMessage, getCursor, inbox, pendingCount, readMessages, setCursor } from '../core/store.ts';
 import { BatonError, validateMessage, type Message } from '../core/schema.ts';
 import { audit } from '../core/audit.ts';
@@ -30,9 +30,13 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+function aliasesFor(agent: string): string[] {
+  return agentAliases(loadConfig().agents, agent).filter((ref) => ref !== agent);
+}
+
 function wakeWaiters(): void {
   for (const waiter of [...waiters]) {
-    const messages = inbox(waiter.agent, getCursor(waiter.agent));
+    const messages = inbox(waiter.agent, getCursor(waiter.agent), aliasesFor(waiter.agent));
     if (messages.length === 0) continue;
     clearTimeout(waiter.timer);
     waiters.delete(waiter);
@@ -65,7 +69,11 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
       return json(res, 200, {
         ok: true,
         messages: readMessages().length,
-        agents: config.agents.map((a) => ({ name: a.name, pending: pendingCount(a.name) })),
+        agents: config.agents.map((a) => ({
+          name: a.name,
+          role: a.role,
+          pending: pendingCount(a.name, aliasesFor(a.name)),
+        })),
         presence: [...presence.entries()].map(([agent, ts]) => ({ agent, lastSeen: ts })),
       });
     }
@@ -98,7 +106,7 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
         if (!found) return json(res, 404, { error: 'no such message' });
         setCursor(body.agent, { ts: found.ts, id: found.id });
       } else {
-        const messages = inbox(body.agent, current);
+        const messages = inbox(body.agent, current, aliasesFor(body.agent));
         const last = messages[messages.length - 1];
         if (last) setCursor(body.agent, { ts: last.ts, id: last.id });
       }
@@ -110,6 +118,7 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
       if (!agent) return json(res, 400, { error: 'agent required' });
       const waitMs = Number(url.searchParams.get('wait') ?? '0');
       const peek = url.searchParams.get('peek') === '1';
+      const aliases = aliasesFor(agent);
 
       const deliver = (messages: Message[]) => {
         if (!peek && messages.length > 0) {
@@ -119,7 +128,7 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
         json(res, 200, { messages });
       };
 
-      const current = inbox(agent, getCursor(agent));
+      const current = inbox(agent, getCursor(agent), aliases);
       if (current.length > 0 || waitMs <= 0) return deliver(current);
 
       const waiter: Waiter = {
@@ -127,7 +136,7 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
         resolve: deliver,
         timer: setTimeout(() => {
           waiters.delete(waiter);
-          deliver(inbox(agent, getCursor(agent)));
+          deliver(inbox(agent, getCursor(agent), aliases));
         }, Math.min(waitMs, 120000)),
       };
       waiters.add(waiter);

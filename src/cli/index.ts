@@ -4,7 +4,17 @@ import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileS
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
-import { configExists, defaultConfig, loadConfig, saveConfig, type AgentConfig } from '../core/config.ts';
+import {
+  agentAliases,
+  agentLabel as formatAgent,
+  configExists,
+  defaultConfig,
+  duplicateAgentNames,
+  loadConfig,
+  resolveAgent,
+  saveConfig,
+  type AgentConfig,
+} from '../core/config.ts';
 import {
   appendMessage,
   ensureHome,
@@ -127,20 +137,28 @@ function version(): string {
   }
 }
 
+/** Accept either an agent's name or its role, and return the canonical name. */
+function canonicalAgent(ref: string | undefined): string | undefined {
+  if (!ref) return undefined;
+  return resolveAgent(loadConfig().agents, ref)?.name ?? ref;
+}
+
 function requireSender(flags: Flags): string {
-  const from = str(flags, 'from') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  const from = canonicalAgent(str(flags, 'from') || process.env.BATON_AGENT || loadConfig().agents[0]?.name);
   if (!from) throw new BatonError('no sender (use --from, set BATON_AGENT, or run `baton init`)');
   return from;
 }
 
 function requireAgent(flags: Flags): string {
-  const agent = str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  const agent = canonicalAgent(str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name);
   if (!agent) throw new BatonError('no agent (use --agent, set BATON_AGENT, or run `baton init`)');
   return agent;
 }
 
 function resolveSelf(flags: Flags): string {
-  const self = str(flags, 'from') || str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name;
+  const self = canonicalAgent(
+    str(flags, 'from') || str(flags, 'agent') || process.env.BATON_AGENT || loadConfig().agents[0]?.name,
+  );
   if (!self) throw new BatonError('no identity (use --agent, set BATON_AGENT, or run `baton init`)');
   return self;
 }
@@ -176,12 +194,24 @@ function printMessages(messages: Message[], asJson: boolean): void {
 }
 
 function prepare(partial: Record<string, unknown>): Message {
-  const message = validateMessage(partial);
+  const config = loadConfig();
+  // from/to may be a name or a role — store the canonical name either way
+  const from =
+    typeof partial.from === 'string' ? resolveAgent(config.agents, partial.from)?.name ?? partial.from : partial.from;
+  const to =
+    typeof partial.to === 'string' && partial.to !== '*'
+      ? resolveAgent(config.agents, partial.to)?.name ?? partial.to
+      : partial.to;
+  const message = validateMessage({ ...partial, from, to });
   if (message.attachments) {
     message.attachments = message.attachments.map((a) => (existsSync(a.path) ? storeFile(a.path) : a));
   }
-  checkLoop(message, loadConfig().maxHop);
+  checkLoop(message, config.maxHop);
   return message;
+}
+
+function aliasesFor(agent: string): string[] {
+  return agentAliases(loadConfig().agents, agent).filter((ref) => ref !== agent);
 }
 
 async function deliver(message: Message): Promise<Message> {
@@ -212,9 +242,10 @@ async function collectInbox(agent: string, waitMs: number, peek: boolean): Promi
     const remote = await remoteInbox(agent, waitMs, peek);
     if (remote) return remote;
   }
+  const aliases = aliasesFor(agent);
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const messages = inbox(agent, getCursor(agent));
+    const messages = inbox(agent, getCursor(agent), aliases);
     if (messages.length > 0 || Date.now() >= deadline) {
       if (messages.length > 0 && !peek) {
         const last = messages[messages.length - 1];
@@ -296,7 +327,7 @@ async function cmdAck(flags: Flags, positional: string[]): Promise<void> {
     console.log(`acked ${agent} up to ${id}`);
     return;
   }
-  const messages = inbox(agent, getCursor(agent));
+  const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
   const last = messages[messages.length - 1];
   if (last) setCursor(agent, { ts: last.ts, id: last.id });
   console.log(`${agent}: ${messages.length ? `acked ${messages.length}` : 'nothing to ack'}`);
@@ -317,9 +348,10 @@ async function cmdStatus(flags: Flags): Promise<void> {
         total: messages.length,
         agents: config.agents.map((a) => ({
           name: a.name,
+          role: a.role ?? null,
           command: a.command,
           model: a.model ?? null,
-          pending: pendingCount(a.name),
+          pending: pendingCount(a.name, aliasesFor(a.name)),
         })),
         memory: allMemory().length,
       }),
@@ -335,7 +367,10 @@ async function cmdStatus(flags: Flags): Promise<void> {
   console.log('agents:');
   for (const agent of config.agents) {
     const model = agent.model ? ` model=${agent.model}` : '';
-    console.log(`  ${agent.name.padEnd(10)} ${agent.command.padEnd(14)}${model}  pending: ${pendingCount(agent.name)}`);
+    const command = agent.command ?? '';
+    console.log(
+      `  ${formatAgent(agent).padEnd(20)} ${command.padEnd(14)}${model}  pending: ${pendingCount(agent.name, aliasesFor(agent.name))}`,
+    );
   }
   const last = messages[messages.length - 1];
   if (last) console.log(`last       : ${new Date(last.ts).toISOString()}  ${last.from} -> ${last.to}  ${last.summary}`);
@@ -604,7 +639,7 @@ function cmdRun(flags: Flags, positional: string[]): void {
   const [agentName, ...promptParts] = positional;
   if (!agentName) throw new BatonError('usage: baton run <agent> <prompt>');
 
-  const agent = loadConfig().agents.find((a) => a.name === agentName);
+  const agent = resolveAgent(loadConfig().agents, agentName);
   if (!agent) throw new BatonError(`unknown agent: ${agentName}`);
 
   const prompt = promptParts.join(' ') || str(flags, 'prompt') || '';
@@ -774,7 +809,7 @@ function cmdContext(): void {
 }
 
 function agentLabel(agent: AgentConfig): string {
-  return `${agent.name.padEnd(10)} ${agent.command.padEnd(16)} model: ${agent.model ?? '(default)'}`;
+  return `${formatAgent(agent).padEnd(20)} ${(agent.command ?? '').padEnd(16)} model: ${agent.model ?? '(default)'}`;
 }
 
 async function handleSlash(self: string, line: string): Promise<'quit' | void> {
@@ -812,7 +847,7 @@ async function handleSlash(self: string, line: string): Promise<'quit' | void> {
       break;
     }
     case 'inbox': {
-      const agent = first ?? self;
+      const agent = canonicalAgent(first) ?? self;
       const messages = await collectInbox(agent, 0, false);
       printMessages(messages, false);
       if (messages.length === 0) console.log(`(no messages for ${agent})`);
@@ -832,15 +867,15 @@ async function handleSlash(self: string, line: string): Promise<'quit' | void> {
         break;
       }
       const config = loadConfig();
-      const target = config.agents.find((a) => a.name === first);
+      const target = resolveAgent(config.agents, first);
       if (!target) {
         console.log(`unknown agent: ${first}`);
         break;
       }
       target.model = second;
       saveConfig(config);
-      await cmdCmd({ from: self } as Flags, [first, `model=${second}`]);
-      console.log(`${first} will launch with ${target.modelFlag ?? '--model'} ${second}`);
+      await cmdCmd({ from: self } as Flags, [target.name, `model=${second}`]);
+      console.log(`${formatAgent(target)} will launch with ${target.modelFlag ?? '--model'} ${second}`);
       break;
     }
     case 'resume':
@@ -986,14 +1021,16 @@ async function cmdWelcome(flags: Flags): Promise<void> {
 
 function resolveChat(flags: Flags): {
   agent: string;
+  agentLabel: string;
   provider: Provider;
   model: string;
   apiKey?: string;
   autoApprove: boolean;
 } {
   const config = loadConfig();
-  const agentName = str(flags, 'agent') || process.env.BATON_AGENT || config.agents[0]?.name || 'agent';
-  const agent = config.agents.find((a) => a.name === agentName) ?? { name: agentName };
+  const ref = str(flags, 'agent') || process.env.BATON_AGENT || config.agents[0]?.name || 'agent';
+  const agent = resolveAgent(config.agents, ref) ?? { name: ref };
+  const agentName = agent.name;
   const providerId = str(flags, 'provider') ?? agent.provider ?? config.defaultProvider;
   if (!providerId) throw new BatonError('no provider set up yet — run `baton` and pick one');
   const provider = getProvider(providerId, config.customProviders);
@@ -1006,6 +1043,7 @@ function resolveChat(flags: Flags): {
   }
   return {
     agent: agentName,
+    agentLabel: formatAgent(agent),
     provider,
     model,
     apiKey,
@@ -1043,6 +1081,7 @@ async function cmdChat(flags: Flags): Promise<void> {
       await runChatApp({
         session,
         agent: context.agent,
+        agentLabel: context.agentLabel,
         providerName: context.provider.name,
         version: version(),
         model: context.model,
@@ -1267,27 +1306,69 @@ async function configureProvider(
   return { providerId: provider.id, model };
 }
 
+async function askAgentName(
+  title: string,
+  placeholder: string,
+  fallback: string,
+  taken: string[],
+): Promise<string> {
+  for (;;) {
+    let answer = '';
+    try {
+      answer = (await inputBox({ title, placeholder, hint: 'enter confirm · esc keeps the default' })).trim();
+    } catch (error) {
+      // esc keeps the default rather than cancelling the whole setup
+      if (error instanceof UiCancelled) return fallback;
+      throw error;
+    }
+    const name = answer || fallback;
+    if (/\s/.test(name)) {
+      note('a name cannot contain spaces — try a single word or handle');
+      continue;
+    }
+    if (taken.some((used) => used.toLowerCase() === name.toLowerCase())) {
+      note(`"${name}" is already taken — the two agent names must be unique`);
+      continue;
+    }
+    return name;
+  }
+}
+
 async function runWizard(): Promise<void> {
   const config = loadConfig();
+  const interactive = isInteractive();
+
+  let leftName = config.agents[0]?.name || 'left';
+  let rightName = config.agents[1]?.name || 'right';
+  if (interactive) {
+    console.log('\n  name your two agents — you can address either the name or the pane (left/right)\n');
+    leftName = await askAgentName('left agent — name', 'e.g. Nova', leftName, []);
+    rightName = await askAgentName('right agent — name', 'e.g. Rex', rightName, [leftName]);
+  }
+
   const first = await configureProvider(config);
 
   config.defaultProvider = first.providerId;
   config.defaultModel = first.model;
-  const leftName = config.agents[0]?.name || 'left';
-  config.agents[0] = { name: leftName, provider: first.providerId, model: first.model };
-  if (!config.agents[1]) config.agents[1] = { name: 'right' };
+  config.agents[0] = { name: leftName, role: 'left', provider: first.providerId, model: first.model };
+  config.agents[1] = { name: rightName, role: 'right' };
   saveConfig(config);
-  note(`left: ${first.providerId} · ${first.model}`);
+  note(`left: ${leftName} · left — ${first.providerId} · ${first.model}`);
 
-  if (await confirmBox('give the right side a different provider/model?')) {
+  if (await confirmBox(`give ${rightName} (right) a different provider/model?`)) {
     const second = await configureProvider(config);
-    config.agents[1] = { name: config.agents[1].name || 'right', provider: second.providerId, model: second.model };
+    config.agents[1] = { name: rightName, role: 'right', provider: second.providerId, model: second.model };
     saveConfig(config);
-    note(`right: ${second.providerId} · ${second.model}`);
+    note(`right: ${rightName} · right — ${second.providerId} · ${second.model}`);
   } else {
-    config.agents[1] = { name: config.agents[1].name || 'right', provider: first.providerId, model: first.model };
+    config.agents[1] = { name: rightName, role: 'right', provider: first.providerId, model: first.model };
     saveConfig(config);
-    note('right: same as left');
+    note(`right: ${rightName} · right — same as left`);
+  }
+
+  const duplicates = duplicateAgentNames(config.agents);
+  if (duplicates.length > 0) {
+    note(`warning: duplicate agent name(s): ${duplicates.join(', ')} — names must be unique`);
   }
 
   console.log(`\n  saved ${CONFIG_PATH}`);

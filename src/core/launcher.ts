@@ -4,8 +4,17 @@ import { join } from 'node:path';
 import { platform } from 'node:os';
 import { AGENTS_DIR } from './paths.ts';
 import { ensureHome } from './store.ts';
-import type { AgentConfig, BatonConfig } from './config.ts';
+import { AGENT_ROLES, type AgentConfig, type BatonConfig } from './config.ts';
 import { pickSplitter, tmuxBin } from './splitter.ts';
+
+/** Place panes by role: the left agent always opens on the left. */
+function panesInRoleOrder(agents: AgentConfig[]): AgentConfig[] {
+  const rank = (agent: AgentConfig): number => {
+    const index = AGENT_ROLES.indexOf((agent.role ?? '') as (typeof AGENT_ROLES)[number]);
+    return index === -1 ? AGENT_ROLES.length : index;
+  };
+  return [...agents].sort((a, b) => rank(a) - rank(b));
+}
 
 export interface UpPlan {
   splitter: string;
@@ -67,12 +76,12 @@ export function buildHeadlessCommand(
 
 export function buildUpPlan(config: BatonConfig): UpPlan {
   const splitter = pickSplitter(config.splitter);
-  const agents = config.agents;
+  const agents = panesInRoleOrder(config.agents);
 
   if (splitter.name === 'tmux' && agents.length > 0) {
     const tmux = tmuxBin();
     const commands = [
-      `${tmux} new-session -d -s baton -n ${agents[0].name} '${paneCommand(agents[0], config.autoApprove)}'`,
+      `${tmux} new-session -d -s baton -n ${agents[0].role ?? agents[0].name} '${paneCommand(agents[0], config.autoApprove)}'`,
     ];
     for (const agent of agents.slice(1)) {
       commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent, config.autoApprove)}'`);
@@ -191,11 +200,12 @@ export function ensurePanes(config: BatonConfig): { added: number; panes: number
   if (!tmuxSessionExists()) {
     return { added: 0, panes: 0, message: 'no running baton session — start one with `baton`' };
   }
-  const wanted = config.agents.length;
+  const agents = panesInRoleOrder(config.agents);
+  const wanted = agents.length;
   let panes = tmuxPaneCount();
   let added = 0;
   while (panes < wanted) {
-    const agent = config.agents[panes];
+    const agent = agents[panes];
     const command = paneCommand(agent, config.autoApprove);
     const split = spawnSync(tmuxBin(), ['split-window', '-h', '-t', 'baton', command], { encoding: 'utf8' });
     if (split.error || split.status !== 0) break;

@@ -233,6 +233,45 @@ test('opencode go gets the session header it requires', () => {
   assert.equal(anthropicHeaders['x-opencode-session'], undefined);
 });
 
+test('agents answer to their name and their role', async () => {
+  const { resolveAgent, agentLabel, agentAliases, duplicateAgentNames, normalizeAgents } = await import(
+    '../src/core/config.ts'
+  );
+  const agents = normalizeAgents([
+    { name: 'Nova', role: 'left' },
+    { name: 'Rex', role: 'right' },
+  ]);
+
+  assert.equal(resolveAgent(agents, 'Nova')?.role, 'left');
+  assert.equal(resolveAgent(agents, 'nova')?.role, 'left', 'name matching is case-insensitive');
+  assert.equal(resolveAgent(agents, 'left')?.name, 'Nova', 'a role resolves to its agent');
+  assert.equal(resolveAgent(agents, 'right')?.name, 'Rex');
+  assert.equal(resolveAgent(agents, 'nobody'), undefined);
+  assert.equal(agentLabel(agents[0]), 'Nova · left');
+  assert.deepEqual(agentAliases(agents, 'left').sort(), ['Nova', 'left'].sort());
+  assert.deepEqual(duplicateAgentNames([{ name: 'Nova' }, { name: 'nova' }]), ['nova']);
+  assert.deepEqual(duplicateAgentNames(agents), []);
+
+  // a legacy config that only has the old left/right names still gets roles
+  const legacy = normalizeAgents([{ name: 'left' }, { name: 'right' }]);
+  assert.equal(legacy[0].role, 'left');
+  assert.equal(legacy[1].role, 'right');
+  assert.equal(resolveAgent(legacy, 'right')?.name, 'right');
+});
+
+test('panes are placed by role but addressed by name', () => {
+  const config = defaultConfig();
+  config.splitter = 'pty';
+  config.agents = [
+    { name: 'Rex', role: 'right' },
+    { name: 'Nova', role: 'left' },
+  ];
+  const plan = buildUpPlan(config);
+  assert.match(plan.commands[0], /BATON_AGENT=Nova/);
+  assert.match(plan.commands[0], /--agent Nova/);
+  assert.match(plan.commands[1], /BATON_AGENT=Rex/);
+});
+
 test('provider registry: grouped, ordered, complete', () => {
   const custom = [{ id: 'mine', name: 'Mine', format: 'openai' as const, baseUrl: 'https://x.example/v1' }];
   const list = registry.orderedProviders(custom);

@@ -41,11 +41,13 @@ function startIndex(all: Message[], cursor: Cursor): number {
   return byTs >= 0 ? byTs : 0;
 }
 
-export function inbox(agent: string, cursor: Cursor): Message[] {
+export function inbox(agent: string, cursor: Cursor, aliases: string[] = []): Message[] {
+  const self = new Set([agent, ...aliases]);
+  const targets = new Set([...self, '*']);
   const all = readMessages();
   return all
     .slice(startIndex(all, cursor))
-    .filter((m) => (m.to === agent || m.to === '*') && m.from !== agent);
+    .filter((m) => targets.has(m.to) && !self.has(m.from));
 }
 
 export function getCursor(agent: string): Cursor {
@@ -64,8 +66,8 @@ export function setCursor(agent: string, cursor: Cursor): void {
   writeFileSync(join(CURSOR_DIR, `${agent}.json`), JSON.stringify(cursor));
 }
 
-export function pendingCount(agent: string): number {
-  return inbox(agent, getCursor(agent)).length;
+export function pendingCount(agent: string, aliases: string[] = []): number {
+  return inbox(agent, getCursor(agent), aliases).length;
 }
 
 export function tail(n: number): Message[] {

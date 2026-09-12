@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { loadConfig } from '../core/config.ts';
+import { agentAliases, loadConfig, resolveAgent } from '../core/config.ts';
 import { appendMessage, getCursor, inbox, pendingCount, readMessages, setCursor } from '../core/store.ts';
 import { validateMessage, BatonError } from '../core/schema.ts';
 import { memoryBlock, remember } from '../core/memory.ts';
@@ -10,7 +10,19 @@ const SERVER_INFO = { name: 'baton', version: '0.1.0' };
 const PROTOCOL_VERSION = '2024-11-05';
 
 function selfAgent(): string {
-  return process.env.BATON_AGENT || loadConfig().agents[0]?.name || 'agent';
+  const config = loadConfig();
+  const ref = process.env.BATON_AGENT || config.agents[0]?.name || 'agent';
+  return resolveAgent(config.agents, ref)?.name ?? ref;
+}
+
+function aliasesFor(agent: string): string[] {
+  return agentAliases(loadConfig().agents, agent).filter((ref) => ref !== agent);
+}
+
+/** Accept a name or a role; fall back to the caller's own identity. */
+function canonical(ref: unknown): string {
+  const value = typeof ref === 'string' && ref.trim() ? ref.trim() : selfAgent();
+  return resolveAgent(loadConfig().agents, value)?.name ?? value;
 }
 
 function text(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -84,9 +96,11 @@ interface RpcRequest {
 function callTool(name: string, args: Record<string, unknown>): unknown {
   switch (name) {
     case 'relay_send': {
+      const config = loadConfig();
+      const toRef = String(args.to ?? '');
       const message = validateMessage({
         from: selfAgent(),
-        to: args.to,
+        to: toRef === '*' ? '*' : (resolveAgent(config.agents, toRef)?.name ?? toRef),
         summary: args.summary,
         type: args.type,
         priority: args.priority,
@@ -103,8 +117,8 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       return { ok: true, id: message.id };
     }
     case 'relay_inbox': {
-      const agent = (args.agent as string) || selfAgent();
-      const messages = inbox(agent, getCursor(agent));
+      const agent = canonical(args.agent);
+      const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
       if (!args.peek && messages.length > 0) {
         const last = messages[messages.length - 1];
         setCursor(agent, { ts: last.ts, id: last.id });
@@ -112,13 +126,13 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       return messages;
     }
     case 'relay_ack': {
-      const agent = (args.agent as string) || selfAgent();
+      const agent = canonical(args.agent);
       if (args.id) {
         const found = readMessages().find((m) => m.id === args.id);
         if (!found) throw new BatonError(`no message with id ${String(args.id)}`);
         setCursor(agent, { ts: found.ts, id: found.id });
       } else {
-        const messages = inbox(agent, getCursor(agent));
+        const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
         const last = messages[messages.length - 1];
         if (last) setCursor(agent, { ts: last.ts, id: last.id });
       }
@@ -128,7 +142,11 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       const config = loadConfig();
       return {
         messages: readMessages().length,
-        agents: config.agents.map((a) => ({ name: a.name, pending: pendingCount(a.name) })),
+        agents: config.agents.map((a) => ({
+          name: a.name,
+          role: a.role,
+          pending: pendingCount(a.name, aliasesFor(a.name)),
+        })),
       };
     }
     case 'relay_remember':
