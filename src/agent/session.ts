@@ -604,6 +604,10 @@ export function createSession(options: SessionOptions): Session {
         usage.inputTokens += result.usage.inputTokens;
         usage.outputTokens += result.usage.outputTokens;
         usage.requests += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'request failed';
+        messages.push({ role: 'assistant', content: `[request failed] ${message}` });
+        throw error;
       } finally {
         stream.done();
         persist();
