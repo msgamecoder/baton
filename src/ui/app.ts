@@ -187,11 +187,27 @@ function clip(text: string, width: number): string {
   return text.length > width ? `${text.slice(0, width - 1)}…` : text;
 }
 
-function listFiles(root: string, limit = 400): string[] {
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.next',
+  'out',
+  'coverage',
+  'target',
+  'vendor',
+  '__pycache__',
+  '.venv',
+  'venv',
+  'Pods',
+]);
+
+function listFiles(root: string, limit = 4000): string[] {
   const out: string[] = [];
-  const stack = [root];
-  while (stack.length > 0 && out.length < limit) {
-    const dir = stack.pop() as string;
+  const queue = [root];
+  while (queue.length > 0 && out.length < limit) {
+    const dir = queue.shift() as string;
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -199,12 +215,12 @@ function listFiles(root: string, limit = 400): string[] {
       continue;
     }
     for (const entry of entries) {
-      if (entry === 'node_modules' || entry === '.git' || entry.startsWith('.')) continue;
+      if (SKIP_DIRS.has(entry) || entry.startsWith('.')) continue;
       const full = join(dir, entry);
       try {
         if (statSync(full).isDirectory()) {
           out.push(`${relative(root, full)}/`);
-          stack.push(full);
+          queue.push(full);
         } else out.push(relative(root, full));
       } catch {
         continue;
@@ -1291,11 +1307,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   const copyToClipboard = (text: string): boolean => {
-    for (const cmd of ['wl-copy', 'xclip -selection clipboard']) {
+    for (const cmd of ['wl-copy', 'xclip -selection clipboard', 'pbcopy']) {
       const result = spawnSync(cmd, { shell: true, input: text });
       if (!result.error && result.status === 0) return true;
     }
-    return false;
+    try {
+      const payload = Buffer.from(text, 'utf8').toString('base64');
+      process.stdout.write(`\u001b]52;c;${payload}\u0007`);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const dispatch = async (line: string): Promise<void> => {

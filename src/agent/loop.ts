@@ -117,7 +117,7 @@ export async function runTurn(
       provider: options.provider,
       apiKey: options.apiKey,
       model: options.model,
-      messages: history,
+      messages: sanitizeHistory(history),
       tools,
       signal: options.signal,
       maxTokens: options.maxTokens,
