@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
@@ -20,7 +20,7 @@ import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { loadConfig, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
-import { memoryBlock, memoryLines } from '../core/memory.ts';
+import { memoryBlock, memoryLines, rememberFact, type MemoryEntry } from '../core/memory.ts';
 import { formatTaskList } from '../agent/tasks.ts';
 import { runUpdate, type Session } from '../agent/session.ts';
 import { formatTokens, totalTokens } from '../agent/history.ts';
@@ -95,6 +95,7 @@ const COMMANDS: Command[] = [
   { group: 'model', label: 'theme', detail: 'switch theme' },
   { group: 'model', label: 'cost', detail: 'price estimate' },
 
+  { group: 'project', label: 'learn', detail: 'read a folder and remember what matters' },
   { group: 'project', label: 'init', detail: 'write AGENTS.md for handoffs' },
   { group: 'project', label: 'files', detail: 'attach a file' },
   { group: 'project', label: 'diff', detail: 'show uncommitted changes' },
@@ -106,6 +107,7 @@ const COMMANDS: Command[] = [
   { group: 'baton', label: 'yes', detail: 'toggle auto-approve for tools' },
   { group: 'baton', label: 'memory', detail: 'what baton remembers about you' },
   { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
+  { group: 'baton', label: 'copy', detail: 'copy the last reply' },
   { group: 'baton', label: 'context', detail: 'protocol and memory' },
   { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
 
@@ -345,14 +347,16 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     const info = session.info();
     const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
     const money = price ? `  ·  $${cost(price, info.usage.inputTokens, info.usage.outputTokens).toFixed(4)}` : '';
-    footer.content = `${options.agent}  ·  ${session.mode().toUpperCase()}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
+    footer.content = `${session.mode().toUpperCase()}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
       totalTokens(info.usage),
     )} tokens${money}${extra ? `  ·  ${extra}` : ''}`;
   };
 
+  let lastReply = '';
+
   const ui: ChatUi = {
     user(text) {
-      addNode(new TextRenderable(renderer, { content: `› ${text}`, fg: theme.user, wrapMode: 'word' }));
+      addNode(new TextRenderable(renderer, { content: `› ${text}`, fg: theme.user, wrapMode: 'word', selectable: true }));
     },
     assistant() {
       let node: Renderable;
@@ -385,6 +389,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           paint();
         },
         done() {
+          lastReply = buffer;
           try {
             if (markdown) markdown.streaming = false;
           } catch {
@@ -396,7 +401,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       };
     },
     line(text, color) {
-      addNode(new TextRenderable(renderer, { content: text, fg: color ?? theme.dim, wrapMode: 'word' }));
+      addNode(new TextRenderable(renderer, { content: text, fg: color ?? theme.dim, wrapMode: 'word', selectable: true }));
     },
     setModel(model) {
       subtitle.content = `${options.providerName}   ·   ${model}`;
@@ -949,6 +954,56 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     ui.line(`wrote ${file}`, theme.user);
   };
 
+  const readCorpus = (target: string): { files: string[]; text: string } => {
+    const root = target.startsWith('/') ? target : join(options.cwd, target);
+    const files: string[] = [];
+    const collect = (path: string): void => {
+      let stat;
+      try {
+        stat = statSync(path);
+      } catch {
+        return;
+      }
+      if (stat.isDirectory()) {
+        for (const entry of readdirSync(path)) {
+          if (entry.startsWith('.') || entry === 'node_modules') continue;
+          collect(join(path, entry));
+        }
+        return;
+      }
+      if (!/\.(md|txt|json|ts|tsx|js|jsx|html|css)$/i.test(path)) return;
+      if (stat.size > 200_000) return;
+      files.push(path);
+    };
+    collect(root);
+    const text = files
+      .map((file) => `### ${relative(options.cwd, file)}\n${readFileSync(file, 'utf8')}`)
+      .join('\n\n')
+      .slice(0, 80_000);
+    return { files, text };
+  };
+
+  const parseFacts = (answer: string): string[] => {
+    const start = answer.indexOf('[');
+    const end = answer.lastIndexOf(']');
+    if (start < 0 || end <= start) return [];
+    try {
+      const parsed = JSON.parse(answer.slice(start, end + 1)) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 30);
+    } catch {
+      return [];
+    }
+  };
+
+  const copyToClipboard = (text: string): boolean => {
+    for (const cmd of ['wl-copy', 'xclip -selection clipboard']) {
+      const result = spawnSync(cmd, { shell: true, input: text });
+      if (!result.error && result.status === 0) return true;
+    }
+    return false;
+  };
+
   const dispatch = async (line: string): Promise<void> => {
     const raw = line.trim();
     if (!raw.startsWith('/')) {
@@ -977,6 +1032,40 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     if (name === 'memory') return openInfo('Memory', memoryLines());
     if (name === 'tasks') return openInfo('Tasks', formatTaskList(session.info().id));
+    if (name === 'copy') {
+      if (!lastReply) {
+        ui.line('nothing to copy yet', theme.dim);
+        return;
+      }
+      const ok = copyToClipboard(lastReply);
+      ui.line(ok ? 'copied' : 'no clipboard tool found (install wl-clipboard or xclip)', ok ? theme.user : theme.error);
+      return;
+    }
+    if (name === 'learn') {
+      const target = args[0] ?? 'doc';
+      const { files, text } = readCorpus(target);
+      if (files.length === 0) {
+        ui.line(`nothing readable at ${target}`, theme.error);
+        return;
+      }
+      ui.line(`learning from ${files.length} file(s) in ${target}…`, theme.dim);
+      try {
+        const answer = await session.oneShot(
+          `Extract the durable facts from this project documentation that would help a future session work on this project. Reply with ONLY a JSON array of short standalone strings (max 20). Examples: ["project: Lumora is a PWA with an Express backend", "rule: never run plain npm run build for the android app"].\n\n${text}`,
+        );
+        const facts = parseFacts(answer);
+        const saved = facts.map((fact) => rememberFact(fact, 'learn')).filter((entry): entry is MemoryEntry => Boolean(entry));
+        if (saved.length === 0) {
+          ui.line('nothing new to learn', theme.dim);
+          return;
+        }
+        ui.line(`learned ${saved.length} fact(s)`, theme.user);
+        for (const entry of saved.slice(0, 20)) ui.line(`  · ${entry.text}`, theme.dim);
+      } catch (error) {
+        ui.line(`learn failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+      }
+      return;
+    }
     if (name === 'plan') {
       session.setMode('plan');
       setFooter();
@@ -1046,27 +1135,38 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   input.on(InputRenderableEvents.INPUT, () => {
     const value = input.value;
     if (inputPurpose) return;
-    if (mode === 'model' || mode === 'sessions' || mode === 'file' || mode === 'provider' || mode === 'command') {
-      if (mode === 'provider' || mode === 'command') {
-        query = value.startsWith('/') ? value.slice(1) : value;
-        if (mode === 'provider') openProviders();
-        else openCommands();
-        return;
-      }
-      if (mode === 'model') {
-        query = value.replace(/^\/?model\s*/, '');
-        void openModels();
-        return;
-      }
-      if (mode === 'sessions') {
-        query = value.replace(/^\/?sessions\s*/, '').replace(/^\/?resume\s*/, '');
-        openSessions();
-        return;
-      }
+
+    if (mode === 'model') {
+      query = value.replace(/^\/?model\s*/, '');
+      void openModels();
+      return;
+    }
+    if (mode === 'sessions') {
+      query = value.replace(/^\/?sessions\s*/, '').replace(/^\/?resume\s*/, '');
+      openSessions();
+      return;
+    }
+    if (mode === 'file') {
       query = value.slice(value.lastIndexOf('@') + 1);
       openFiles();
       return;
     }
+    if (mode === 'provider') {
+      query = value.startsWith('/') ? value.slice(1) : value;
+      openProviders();
+      return;
+    }
+    if (mode === 'command') {
+      // a space means the user is typing arguments: let Enter dispatch it
+      if (!value.startsWith('/') || value.includes(' ')) {
+        closeModal();
+        return;
+      }
+      query = value.slice(1);
+      openCommands();
+      return;
+    }
+
     if (value.startsWith('/') && !value.includes(' ')) {
       query = value.slice(1);
       openCommands();
@@ -1080,25 +1180,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
 
   renderer.keyInput.on('keypress', (key: any) => {
-    const modeBefore = mode;
-    if (process.env.BATON_DEBUG_KEYS) {
-      try {
-        appendFileSync('/tmp/baton-keylog.txt', `key=${key?.name} before=${modeBefore}\n`);
-      } catch {
-        /* ignore */
-      }
-    }
     try {
       handleKey(key);
     } catch (error) {
       ui.line(`key handling failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
-    }
-    if (process.env.BATON_DEBUG_KEYS) {
-      try {
-        appendFileSync('/tmp/baton-keylog.txt', `  after=${mode} rows=${rows.length} title=${title}\n`);
-      } catch {
-        /* ignore */
-      }
     }
   });
 
@@ -1231,7 +1316,18 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       });
   });
 
-  ui.line('Welcome to Baton.  Type a request,  /  for commands,  @  to attach a file.', theme.dim);
+  const TIPS = [
+    'you can switch models any time with  /model',
+    'connect another provider with  /provider',
+    'say  "save my name is … to memory"  and it is kept forever',
+    'type  /  to see every command',
+    'attach a file with  @ , paste an image with  ctrl+v',
+    'plan first with  /plan , then let it build',
+    'when it is unsure it asks you instead of guessing',
+    '/learn doc   reads a folder and remembers what matters',
+    '/resume   brings back an old session with its token count',
+  ];
+  ui.line(`Welcome to Baton  ·  did you know:  ${TIPS[Math.floor(Math.random() * TIPS.length)]}`, theme.dim);
   ui.line('', theme.dim);
   setFooter();
   input.focus();

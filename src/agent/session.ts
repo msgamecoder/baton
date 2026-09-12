@@ -78,6 +78,7 @@ export interface Session {
   setProvider(id: string): boolean;
   mode(): AgentMode;
   setMode(mode: AgentMode): void;
+  oneShot(prompt: string): Promise<string>;
   listSessions(): SessionRecord[];
   resume(id: string): boolean;
   newSession(): void;
@@ -349,6 +350,30 @@ export function createSession(options: SessionOptions): Session {
     setMode: (next: AgentMode) => {
       agentMode = next;
       if (messages.length > 0 && messages[0].role === 'system') messages[0] = system();
+    },
+    oneShot: async (prompt: string): Promise<string> => {
+      const result = await runTurn(
+        [
+          { role: 'system', content: system().content },
+          { role: 'user', content: prompt },
+        ],
+        {
+          provider,
+          apiKey,
+          model,
+          cwd: options.cwd,
+          sessionId,
+          readOnly: true,
+          tools: false,
+          maxTurns: 1,
+          events: {},
+        },
+      );
+      usage.inputTokens += result.usage.inputTokens;
+      usage.outputTokens += result.usage.outputTokens;
+      usage.requests += 1;
+      persist();
+      return result.finalText;
     },
     listSessions: () => listSessionRecords(),
     deleteSession: (id: string) => deleteSessionRecord(id),
