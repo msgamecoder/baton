@@ -50,6 +50,20 @@ test('sanitizeHistory never leaves a tool_calls without its result', () => {
   assert.equal(repaired[repaired.length - 1].role, 'tool');
 });
 
+test('write and edit report line counts like a diff', async () => {
+  const { runTool } = await import('../src/agent/tools.ts');
+  const { mkdtempSync } = await import('node:fs');
+  const dir = mkdtempSync('/tmp/baton-tool-');
+  const written = await runTool('write_file', { path: `${dir}/a.txt`, content: 'one\ntwo\nthree' }, { cwd: dir });
+  assert.match(written.output, /\+3 lines/);
+  const edited = await runTool(
+    'edit_file',
+    { path: `${dir}/a.txt`, old_string: 'two', new_string: 'TWO\n2' },
+    { cwd: dir },
+  );
+  assert.match(edited.output, /\+2 −1/);
+});
+
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
   assert.deepEqual(parseSlash('  /send oc handoff build is ready  '), {

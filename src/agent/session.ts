@@ -599,7 +599,11 @@ export function createSession(options: SessionOptions): Session {
             onToolEnd: (_call, output, isError) => {
               const first = output.split('\n')[0].slice(0, 120);
               const more = output.split('\n').length > 1 ? '   ·   ctrl+o shows it all' : '';
-              ui.line(`   └ ${first}${more}`, isError ? '#e06c75' : '#565672');
+              const changed = /^(wrote|edited) /.test(first);
+              ui.line(
+                `   └ ${first}${more}`,
+                isError ? '#e06c75' : changed ? '#7fd1b9' : '#565672',
+              );
               ui.recordTool?.(`${_call.name} ${(_call.arguments ?? '').slice(0, 400)}`, output);
             },
           },

@@ -320,7 +320,8 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         const path = resolvePath(ctx.cwd, String(args.path ?? ''));
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(args.content ?? ''));
-        return { output: `wrote ${path} (${String(args.content ?? '').length} bytes)` };
+        const written = String(args.content ?? '').split('\n');
+        return { output: `wrote ${path}  +${written.length} lines` };
       }
       case 'edit_file': {
         const path = resolvePath(ctx.cwd, String(args.path ?? ''));
@@ -338,7 +339,9 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
           ? original.split(needle).join(String(args.new_string ?? ''))
           : original.replace(needle, String(args.new_string ?? ''));
         writeFileSync(path, updated);
-        return { output: `edited ${path} (${count} replacement${count === 1 ? '' : 's'})` };
+        const removed = String(args.old_string ?? '').split('\n').length * count;
+        const added = String(args.new_string ?? '').split('\n').length * count;
+        return { output: `edited ${path}  +${added} −${removed}` };
       }
       case 'list_dir': {
         const path = resolvePath(ctx.cwd, String(args.path ?? '.'));
