@@ -112,7 +112,7 @@ export function applyAnthropicEvent(state: StreamResult, evt: any, onText?: (t: 
 function toOpenAIMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((message) => {
     if (message.role === 'tool') {
-      return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
+      return { role: 'tool', tool_call_id: message.toolCallId, content: message.content || '(no output)' };
     }
     if (message.role === 'assistant' && message.toolCalls?.length) {
       return {

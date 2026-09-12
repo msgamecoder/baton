@@ -1,8 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import { streamChat } from '../providers/client.ts';
 import { TOOLS, READ_ONLY_TOOLS, runTool } from './tools.ts';
 import type { ToolContext } from './tools.ts';
 import type { ChatMessage, ToolCall } from '../providers/types.ts';
 import type { Provider } from '../providers/registry.ts';
+
+/**
+ * Some gateways (OpenCode Go, Azure) reject a tool call with no id, and OpenAI
+ * requires every `tool_calls` entry to be answered by a tool message with a
+ * matching, unique `tool_call_id`. Give every call a stable id up front.
+ */
+export function withStableIds(calls: ToolCall[]): ToolCall[] {
+  const seen = new Set<string>();
+  return calls.map((call) => {
+    let id = call.id;
+    if (!id || seen.has(id)) id = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    seen.add(id);
+    return { ...call, id };
+  });
+}
 
 export interface TurnEvents {
   onText?: (chunk: string) => void;
@@ -128,16 +144,17 @@ export async function runTurn(
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
 
+    const toolCalls = withStableIds(result.toolCalls);
     history.push({
       role: 'assistant',
       content: result.text,
-      ...(result.toolCalls.length ? { toolCalls: result.toolCalls } : {}),
+      ...(toolCalls.length ? { toolCalls } : {}),
     });
     finalText = result.text;
 
-    if (result.toolCalls.length === 0) break;
+    if (toolCalls.length === 0) break;
 
-    for (const call of result.toolCalls) {
+    for (const call of toolCalls) {
       events.onToolStart?.(call);
       let args: Record<string, unknown> = {};
       try {
@@ -145,16 +162,27 @@ export async function runTurn(
       } catch {
         args = {};
       }
-      const outcome = await runTool(call.name, args, {
-        cwd: options.cwd,
-        sessionId: options.sessionId,
-        confirm: options.confirm,
-        ask: options.ask,
-      });
-      events.onToolEnd?.(call, outcome.output, Boolean(outcome.isError));
+      // every call must get exactly one tool message back, even if it throws,
+      // or the next request fails the tool_calls/tool_call_id pairing rule
+      let output = '';
+      let isError = false;
+      try {
+        const outcome = await runTool(call.name, args, {
+          cwd: options.cwd,
+          sessionId: options.sessionId,
+          confirm: options.confirm,
+          ask: options.ask,
+        });
+        output = outcome.output;
+        isError = Boolean(outcome.isError);
+      } catch (error) {
+        output = `tool ${call.name} failed: ${error instanceof Error ? error.message : 'error'}`;
+        isError = true;
+      }
+      events.onToolEnd?.(call, output, isError);
       history.push({
         role: 'tool',
-        content: outcome.output,
+        content: output || '(no output)',
         toolCallId: call.id,
         name: call.name,
       });

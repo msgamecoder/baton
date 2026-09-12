@@ -64,6 +64,26 @@ test('markdown tables become aligned text', async () => {
   assert.equal(formatTables('no table here'), 'no table here');
 });
 
+test('tool calls get stable, unique ids so the protocol pairing holds', async () => {
+  const { withStableIds } = await import('../src/agent/loop.ts');
+
+  const generated = withStableIds([
+    { id: '', name: 'a', arguments: '{}' },
+    { id: '', name: 'b', arguments: '{}' },
+  ]);
+  assert.ok(generated[0].id && generated[1].id, 'a call with no id gets one');
+  assert.notEqual(generated[0].id, generated[1].id, 'ids are unique');
+
+  const dupes = withStableIds([
+    { id: 'same', name: 'a', arguments: '{}' },
+    { id: 'same', name: 'b', arguments: '{}' },
+  ]);
+  assert.equal(dupes[0].id, 'same', 'an existing unique id is kept');
+  assert.notEqual(dupes[0].id, dupes[1].id, 'a repeated id is replaced');
+
+  assert.equal(withStableIds([{ id: 'call_1', name: 'x', arguments: '{}' }])[0].id, 'call_1');
+});
+
 test('wide tables wrap inside their cells and fit the width', async () => {
   const { formatTables } = await import('../src/core/tables.ts');
   const markdown = [

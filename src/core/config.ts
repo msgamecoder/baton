@@ -83,8 +83,8 @@ export function duplicateAgentNames(agents: AgentConfig[]): string[] {
 export function defaultConfig(): BatonConfig {
   return {
     agents: [
-      { name: 'left', role: 'left' },
-      { name: 'right', role: 'right' },
+      { name: 'Nova', role: 'left' },
+      { name: 'Rex', role: 'right' },
     ],
     port: DEFAULT_PORT,
     maxHop: DEFAULT_MAX_HOP,

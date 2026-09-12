@@ -1002,6 +1002,29 @@ async function cmdWelcome(flags: Flags): Promise<void> {
     console.log('');
   }
 
+  // an older config still calls the agents "left" and "right" — give them names
+  const config = loadConfig();
+  const stillDefault = config.agents.length >= 2 && config.agents.every((agent) => /^(left|right)$/i.test(agent.name));
+  if (stillDefault && interactive && !auto) {
+    console.log('\n  your two agents are still named "left" and "right" — name them');
+    console.log('  (left/right stay their roles, so you can address either one)\n');
+    try {
+      const leftName = await askAgentName('left agent — name', 'e.g. Nova', 'Nova', []);
+      const rightName = await askAgentName('right agent — name', 'e.g. Rex', 'Rex', [leftName]);
+      config.agents[0] = { ...config.agents[0], name: leftName, role: config.agents[0].role ?? 'left' };
+      config.agents[1] = { ...config.agents[1], name: rightName, role: config.agents[1].role ?? 'right' };
+      saveConfig(config);
+      note(`left = ${leftName}   ·   right = ${rightName}`);
+      if (tmuxSessionExists()) {
+        spawnSync(tmuxBin(), ['kill-session', '-t', 'baton'], { stdio: 'ignore' });
+        console.log('  (restarting the panes so they pick up the new names)');
+      }
+    } catch (error) {
+      closePrompts();
+      if (!(error instanceof UiCancelled)) throw error;
+    }
+  }
+
   if (bool(flags, 'no-start')) {
     console.log('nothing was started.');
     return;
@@ -1338,8 +1361,10 @@ async function runWizard(): Promise<void> {
   const config = loadConfig();
   const interactive = isInteractive();
 
-  let leftName = config.agents[0]?.name || 'left';
-  let rightName = config.agents[1]?.name || 'right';
+  const defaulted = (name: string | undefined, fallback: string): string =>
+    !name || /^(left|right)$/i.test(name) ? fallback : name;
+  let leftName = defaulted(config.agents[0]?.name, 'Nova');
+  let rightName = defaulted(config.agents[1]?.name, 'Rex');
   if (interactive) {
     console.log('\n  name your two agents — you can address either the name or the pane (left/right)\n');
     leftName = await askAgentName('left agent — name', 'e.g. Nova', leftName, []);
