@@ -22,7 +22,7 @@ import { allProviders } from '../providers/registry.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { memoryBlock, memoryLines, rememberFact, type MemoryEntry } from '../core/memory.ts';
 import { formatTaskList } from '../agent/tasks.ts';
-import { runUpdate, type Session } from '../agent/session.ts';
+import { runUpdate, setConfirmHandler, type Session } from '../agent/session.ts';
 import { ensurePanes } from '../core/launcher.ts';
 import { formatTokens, totalTokens } from '../agent/history.ts';
 import { readRelayInbox } from '../agent/relay.ts';
@@ -356,7 +356,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
   };
 
-  let thinkingOn = false;
+  let thinkingOn = true;
   let thinkingNode: TextRenderable | null = null;
   let thinkingTimer: ReturnType<typeof setInterval> | null = null;
   let turnStarted = 0;
@@ -417,24 +417,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     },
     assistant() {
       addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
-      let node: Renderable;
-      let markdown: MarkdownRenderable | null = null;
-      if (syntax) {
-        markdown = new MarkdownRenderable(renderer, {
-          content: '',
-          syntaxStyle: syntax,
-          fg: theme.text,
-          streaming: true,
-        });
-        node = markdown;
-      } else {
-        node = new TextRenderable(renderer, { content: '', fg: theme.text, wrapMode: 'word' });
-      }
+      const node = new TextRenderable(renderer, {
+        content: '',
+        fg: theme.text,
+        wrapMode: 'word',
+        flexShrink: 0,
+        selectable: true,
+      });
       addNode(node);
       let buffer = '';
       const paint = (): void => {
-        if (markdown) markdown.content = buffer;
-        else (node as TextRenderable).content = buffer;
+        node.content = buffer;
         scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
       };
       return {
@@ -450,11 +443,6 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         },
         done() {
           lastReply = buffer;
-          try {
-            if (markdown) markdown.streaming = false;
-          } catch {
-            /* older versions have no streaming setter */
-          }
           addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
           setFooter();
         },
@@ -833,6 +821,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     input.value = '';
     input.focus();
   };
+
+  setConfirmHandler(async (question) => {
+    const answer = await openQuestion(question, ['Yes — run it (Recommended)', 'No — skip it']);
+    return /^yes/i.test(answer);
+  });
 
   const openQuestion = (question: string, options: string[]): Promise<string> => {
     askQuestion = question;
@@ -1364,6 +1357,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
 
   const handleKey = (key: any): void => {
+    if (key?.ctrl && key?.name === 'c') {
+      try {
+        renderer.destroy();
+      } catch {
+        /* already gone */
+      }
+      process.exit(0);
+    }
     if (key?.ctrl && key?.name === 'o') {
       if (!mode && !inputPurpose) openMenu();
       return;
@@ -1511,17 +1512,6 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         input.focus();
       });
   });
-
-  const onRightClick = (event: { button?: string }): void => {
-    if (event?.button === 'right' && !mode && !inputPurpose) openMenu();
-  };
-  for (const target of [renderer.root, root, scroll] as unknown as Array<{ onMouseDown?: unknown }>) {
-    try {
-      target.onMouseDown = onRightClick;
-    } catch {
-      /* some nodes may not accept handlers */
-    }
-  }
 
   const onSelection = (): void => {
     try {

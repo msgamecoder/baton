@@ -149,6 +149,12 @@ function trimHistory(messages: ChatMessage[], keep = 16): ChatMessage[] {
   });
 }
 
+let confirmHandler: ((question: string) => Promise<boolean>) | null = null;
+
+export function setConfirmHandler(fn: (question: string) => Promise<boolean>): void {
+  confirmHandler = fn;
+}
+
 export function createSession(options: SessionOptions): Session {
   let provider = options.provider;
   let model = options.model;
@@ -332,8 +338,10 @@ export function createSession(options: SessionOptions): Session {
   const confirmTool = async (toolName: string, args: Record<string, unknown>): Promise<boolean> => {
     if (autoApprove) return true;
     const detail = (args.command as string) ?? (args.path as string) ?? '';
+    const question = `run ${toolName} ${String(detail).slice(0, 80)}?`;
+    if (confirmHandler) return confirmHandler(question);
     const { confirm } = await import('../core/prompt.ts');
-    return confirm(`run ${toolName} ${String(detail).slice(0, 80)}? [y/N] `);
+    return confirm(`${question} [y/N] `);
   };
 
   const compact = async (): Promise<{ before: number; after: number; summary: string }> => {
