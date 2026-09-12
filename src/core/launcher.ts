@@ -159,6 +159,35 @@ export function tmuxAttach(name = 'baton'): void {
   spawnSync(tmuxBin(), ['attach', '-t', name], { stdio: 'inherit' });
 }
 
+export function tmuxPaneCount(name = 'baton'): number {
+  const result = spawnSync(tmuxBin(), ['list-panes', '-t', name], { encoding: 'utf8' });
+  if (result.error || result.status !== 0 || !result.stdout) return 0;
+  return result.stdout.split('\n').filter((line) => line.trim().length > 0).length;
+}
+
+export function ensurePanes(config: BatonConfig): { added: number; panes: number; message: string } {
+  if (!tmuxSessionExists()) {
+    return { added: 0, panes: 0, message: 'no running baton session — start one with `baton`' };
+  }
+  const wanted = config.agents.length;
+  let panes = tmuxPaneCount();
+  let added = 0;
+  while (panes < wanted) {
+    const agent = config.agents[panes];
+    const command = paneCommand(agent);
+    const split = spawnSync(tmuxBin(), ['split-window', '-h', '-t', 'baton', command], { encoding: 'utf8' });
+    if (split.error || split.status !== 0) break;
+    added++;
+    panes++;
+  }
+  spawnSync(tmuxBin(), ['select-pane', '-t', 'baton:0.0'], { stdio: 'ignore' });
+  return {
+    added,
+    panes,
+    message: added > 0 ? `added ${added} pane(s) — now ${panes}` : `already ${panes} pane(s)`,
+  };
+}
+
 export function spawnBackground(config: BatonConfig): StartedAgent[] {
   ensureHome();
   mkdirSync(AGENTS_DIR, { recursive: true });

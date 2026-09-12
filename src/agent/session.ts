@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
 import { memoryBlock, remember } from '../core/memory.ts';
 import { protocolText } from '../core/instructions.ts';
@@ -65,6 +65,7 @@ export interface Session {
   info(): SessionInfo;
   models(): Promise<string[]>;
   setModel(model: string): void;
+  setProvider(id: string): boolean;
   listSessions(): SessionRecord[];
   resume(id: string): boolean;
   newSession(): void;
@@ -307,6 +308,13 @@ export function createSession(options: SessionOptions): Session {
     setModel: (next: string) => {
       model = next;
     },
+    setProvider: (id: string): boolean => {
+      const next = getProvider(id, loadConfig().customProviders);
+      if (!next) return false;
+      provider = next;
+      apiKey = resolveKey(next);
+      return true;
+    },
     listSessions: () => listSessionRecords(),
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
@@ -389,7 +397,33 @@ export function createSession(options: SessionOptions): Session {
 }
 
 export function runUpdate(): { ok: boolean; output: string } {
-  const result = spawnSync('npm', ['install', '-g', 'baton@latest'], { encoding: 'utf8' });
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
-  return { ok: result.status === 0, output: output.split('\n').slice(-3).join('\n') };
+  const sourceDir = (() => {
+    try {
+      return join(dirname(new URL(import.meta.url).pathname), '..', '..');
+    } catch {
+      return '';
+    }
+  })();
+
+  const published = spawnSync('npm', ['install', '-g', 'baton@latest', '--no-fund', '--no-audit'], {
+    encoding: 'utf8',
+  });
+  if (published.status === 0) {
+    const check = spawnSync('which', ['baton'], { encoding: 'utf8' });
+    if (check.status === 0) {
+      return { ok: true, output: 'installed from npm' };
+    }
+  }
+
+  if (sourceDir && existsSync(join(sourceDir, 'package.json'))) {
+    const local = spawnSync('npm', ['install', '-g', sourceDir, '--no-fund', '--no-audit'], { encoding: 'utf8' });
+    const output = `${local.stdout ?? ''}${local.stderr ?? ''}`.trim().split('\n').slice(-2).join('\n');
+    const check = spawnSync('which', ['baton'], { encoding: 'utf8' });
+    if (local.status === 0 && check.status === 0) {
+      return { ok: true, output: `reinstalled from ${sourceDir}` };
+    }
+    return { ok: false, output: output || 'install failed' };
+  }
+
+  return { ok: false, output: 'baton is not published to npm yet and no local checkout was found' };
 }

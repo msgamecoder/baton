@@ -1,22 +1,28 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
   BoxRenderable,
   InputRenderable,
   InputRenderableEvents,
+  MarkdownRenderable,
   ScrollBoxRenderable,
+  SyntaxStyle,
   TextRenderable,
   createCliRenderer,
   type CliRenderer,
+  type Renderable,
 } from '@opentui/core';
-import { MEDIA_DIR } from '../core/paths.ts';
-import { CONFIG_PATH } from '../core/paths.ts';
+import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
 import { protocolText } from '../core/instructions.ts';
-import { keysFile } from '../core/keys.ts';
+import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { loadConfig } from '../core/config.ts';
+import { allProviders } from '../providers/registry.ts';
+import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
+import { memoryBlock } from '../core/memory.ts';
 import { runUpdate, type Session } from '../agent/session.ts';
+import { formatTokens, totalTokens } from '../agent/history.ts';
 
 interface Theme {
   bg: string;
@@ -32,26 +38,24 @@ interface Theme {
 
 const THEMES: Record<string, Theme> = {
   baton: {
-    bg: '#0f0f17',
-    panel: '#181822',
-    accent: '#8b7bd8',
-    text: '#dcdcec',
-    dim: '#6b6b8f',
-    user: '#7fd1b9',
-    tool: '#e0b070',
-    error: '#e06c75',
-    pick: '#c8c0ff',
+    bg: '#0f0f17', panel: '#181822', accent: '#8b7bd8', text: '#dcdcec',
+    dim: '#6b6b8f', user: '#7fd1b9', tool: '#e0b070', error: '#e06c75', pick: '#c8c0ff',
+  },
+  midnight: {
+    bg: '#0b1020', panel: '#141c33', accent: '#5b9dff', text: '#dbe4f5',
+    dim: '#66759b', user: '#6ee7b7', tool: '#f2c46d', error: '#f87171', pick: '#a9ccff',
+  },
+  forest: {
+    bg: '#0c1512', panel: '#14231d', accent: '#5fbf8f', text: '#dcece4',
+    dim: '#648074', user: '#8fd6a8', tool: '#d9c06a', error: '#e07a7a', pick: '#b6f0d0',
   },
   mono: {
-    bg: '#111113',
-    panel: '#1c1c1f',
-    accent: '#b9b9c8',
-    text: '#e6e6ea',
-    dim: '#6e6e78',
-    user: '#bfc6d8',
-    tool: '#c8b28a',
-    error: '#d98a8a',
-    pick: '#ffffff',
+    bg: '#111113', panel: '#1c1c1f', accent: '#b9b9c8', text: '#e6e6ea',
+    dim: '#6e6e78', user: '#bfc6d8', tool: '#c8b28a', error: '#d98a8a', pick: '#ffffff',
+  },
+  daylight: {
+    bg: '#f5f5f8', panel: '#ffffff', accent: '#5b4bd6', text: '#1c1c24',
+    dim: '#6b6b80', user: '#0f766e', tool: '#b45309', error: '#b91c1c', pick: '#4338ca',
   },
 };
 
@@ -71,49 +75,88 @@ export interface ChatAppOptions {
   cwd: string;
 }
 
-export interface PaletteItem {
+type Command = { label: string; detail: string; group: string };
+
+const COMMANDS: Command[] = [
+  { group: 'session', label: 'help', detail: 'show this list' },
+  { group: 'session', label: 'new', detail: 'start a new session' },
+  { group: 'session', label: 'sessions', detail: 'switch session' },
+  { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
+  { group: 'session', label: 'clear', detail: 'forget this conversation' },
+  { group: 'session', label: 'quit', detail: 'exit' },
+
+  { group: 'model', label: 'model', detail: 'switch model' },
+  { group: 'model', label: 'provider', detail: 'connect or switch provider' },
+  { group: 'model', label: 'key', detail: 'save an api key' },
+  { group: 'model', label: 'theme', detail: 'switch theme' },
+  { group: 'model', label: 'cost', detail: 'price estimate' },
+
+  { group: 'project', label: 'init', detail: 'write AGENTS.md for handoffs' },
+  { group: 'project', label: 'files', detail: 'attach a file' },
+  { group: 'project', label: 'diff', detail: 'show uncommitted changes' },
+  { group: 'project', label: 'review', detail: 'ask the agent to review the diff' },
+
+  { group: 'baton', label: 'status', detail: 'provider, model, session, tokens' },
+  { group: 'baton', label: 'debug', detail: 'paths, versions, config' },
+  { group: 'baton', label: 'update', detail: 'update baton and restart' },
+  { group: 'baton', label: 'yes', detail: 'toggle auto-approve for tools' },
+  { group: 'baton', label: 'context', detail: 'protocol and memory' },
+  { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
+
+  { group: 'relay', label: 'send', detail: 'message the other agent' },
+  { group: 'relay', label: 'inbox', detail: 'read the relay inbox' },
+];
+
+const BLURBS: Record<string, string> = {
+  'command-code': 'Claude and DeepSeek via Command Code',
+  opencode: 'OpenCode Zen',
+  'opencode-go': 'Low cost subscription for everyone',
+  anthropic: 'Claude (Anthropic) API key',
+  openai: 'GPT models',
+  google: 'Google Gemini',
+  xai: 'Grok',
+  mistral: 'Mistral models',
+  perplexity: 'Search-grounded answers',
+  deepseek: 'Cheapest frontier models',
+  moonshot: 'Kimi K2',
+  groq: 'Fastest inference',
+  together: 'Open models, fine-tuning',
+  fireworks: 'Production inference',
+  cerebras: 'Wafer-scale speed',
+  deepinfra: 'Open model hosting',
+  siliconflow: 'China-friendly open models',
+  zai: 'GLM models',
+  dashscope: 'Qwen models',
+  openrouter: '200+ models, one key',
+  vercel: 'Vercel AI Gateway',
+  litellm: 'Your own proxy',
+  ollama: 'Runs on your machine',
+  lmstudio: 'Runs on your machine',
+  vllm: 'Your own server',
+  custom: 'Any OpenAI-compatible URL',
+};
+
+interface Row {
+  kind: 'header' | 'item' | 'blank';
   label: string;
   detail?: string;
   value?: string;
-  header?: boolean;
+  checked?: boolean;
 }
 
-interface Command extends PaletteItem {
-  label: string;
-  detail: string;
-  group: string;
+type Mode = 'command' | 'provider' | 'theme' | 'model' | 'sessions' | 'export' | 'file' | 'info' | 'keyinput';
+
+function visibleLength(text: string): number {
+  return text.replace(/\u001b\[[0-9;]*m/g, '').length;
 }
 
-const COMMANDS: Command[] = [
-  { group: 'session', label: '/help', detail: 'show the command list' },
-  { group: 'session', label: '/new', detail: 'start a new session' },
-  { group: 'session', label: '/sessions', detail: 'switch session' },
-  { group: 'session', label: '/resume', detail: 'same as /sessions' },
-  { group: 'session', label: '/export', detail: 'export this session (md, html, json)' },
-  { group: 'session', label: '/clear', detail: 'forget this conversation' },
-  { group: 'session', label: '/quit', detail: 'exit' },
+function pad(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - visibleLength(text)));
+}
 
-  { group: 'model', label: '/model', detail: 'switch model' },
-  { group: 'model', label: '/provider', detail: 'connect or switch provider' },
-  { group: 'model', label: '/key', detail: 'save an api key' },
-  { group: 'model', label: '/cost', detail: 'price estimate for this model' },
-
-  { group: 'project', label: '/init', detail: 'write AGENTS.md so agents use baton' },
-  { group: 'project', label: '/diff', detail: 'show uncommitted changes' },
-  { group: 'project', label: '/review', detail: 'ask the agent to review uncommitted changes' },
-  { group: 'project', label: '/files', detail: 'attach a file (@ does this too)' },
-
-  { group: 'baton', label: '/status', detail: 'provider, model, session, tokens' },
-  { group: 'baton', label: '/debug', detail: 'paths, versions, config' },
-  { group: 'baton', label: '/update', detail: 'update baton and restart' },
-  { group: 'baton', label: '/yes', detail: 'toggle auto-approve for tools' },
-  { group: 'baton', label: '/theme', detail: 'switch theme' },
-  { group: 'baton', label: '/context', detail: 'protocol + memory' },
-  { group: 'baton', label: '/remember', detail: 'keep a fact across sessions' },
-
-  { group: 'relay', label: '/send', detail: 'message the other agent' },
-  { group: 'relay', label: '/inbox', detail: 'read the relay inbox' },
-];
+function clip(text: string, width: number): string {
+  return text.length > width ? `${text.slice(0, width - 1)}…` : text;
+}
 
 function listFiles(root: string, limit = 400): string[] {
   const out: string[] = [];
@@ -173,8 +216,15 @@ function clipboardText(): string | null {
 
 export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const { session } = options;
-  let theme = THEMES.baton;
   let themeName = 'baton';
+  let theme = THEMES[themeName];
+
+  let syntax: SyntaxStyle | null = null;
+  try {
+    syntax = SyntaxStyle.create();
+  } catch {
+    syntax = null;
+  }
 
   const renderer: CliRenderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -188,7 +238,9 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     width: '100%',
     height: '100%',
     flexDirection: 'column',
-    padding: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
     backgroundColor: theme.bg,
   });
   renderer.root.add(root);
@@ -197,34 +249,38 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   header.add(new ASCIIFontRenderable(renderer, { id: 'wordmark', text: 'BATON', font: 'tiny', color: theme.accent }));
   const subtitle = new TextRenderable(renderer, {
     id: 'subtitle',
-    content: `${options.providerName}  ·  ${options.model}`,
+    content: `${options.providerName}   ·   ${options.model}`,
     fg: theme.dim,
   });
   header.add(subtitle);
   root.add(header);
 
-  const chatBox = new BoxRenderable(renderer, { id: 'chat', flexGrow: 1, flexDirection: 'column', paddingX: 1 });
+  const spacer = new TextRenderable(renderer, { id: 'spacer', content: '', fg: theme.dim, flexShrink: 0 });
+  root.add(spacer);
+
   const scroll = new ScrollBoxRenderable(renderer, { id: 'scroll', flexGrow: 1, width: '100%' });
   scroll.stickyScroll = true;
   scroll.stickyStart = 'bottom';
   scroll.verticalScrollBar.visible = false;
   scroll.horizontalScrollBar.visible = false;
-  chatBox.add(scroll);
-  root.add(chatBox);
+  root.add(scroll);
 
   const inputBox = new BoxRenderable(renderer, {
     id: 'inputbox',
-    title: ' ask anything ',
     border: true,
     borderColor: theme.accent,
     height: 3,
     flexShrink: 0,
-    paddingX: 1,
+    marginTop: 1,
+    paddingLeft: 1,
+    paddingRight: 1,
+    title: ' message ',
+    titleAlignment: 'left',
   });
   const input = new InputRenderable(renderer, {
     id: 'input',
     flexGrow: 1,
-    placeholder: 'Ask anything…   / commands   @ files',
+    placeholder: 'Ask anything…    /  commands    @  files',
     backgroundColor: theme.bg,
     textColor: theme.text,
     placeholderColor: theme.dim,
@@ -249,58 +305,82 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
   const dialog = new BoxRenderable(renderer, {
     id: 'dialog',
-    width: '74%',
+    width: '76%',
     flexDirection: 'column',
     border: true,
     borderColor: theme.accent,
     backgroundColor: theme.panel,
     titleAlignment: 'left',
-    paddingX: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    paddingBottom: 1,
   });
   overlay.add(dialog);
   renderer.root.add(overlay);
 
-  const addNode = (node: TextRenderable): void => {
+  const addNode = (node: Renderable): void => {
     scroll.content.add(node);
     scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
   };
 
   const setFooter = (extra?: string): void => {
     const info = session.info();
-    const tokens = info.usage.inputTokens + info.usage.outputTokens;
-    footer.content = `${info.id} · ${info.messages} msgs · ${tokens} tokens · ${options.agent}${extra ? ` · ${extra}` : ''}`;
+    footer.content = `${options.agent}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
+      totalTokens(info.usage),
+    )} tokens${extra ? `  ·  ${extra}` : ''}`;
   };
 
   const ui: ChatUi = {
     user(text) {
-      addNode(new TextRenderable(renderer, { content: `› ${text}`, fg: theme.user }));
+      addNode(new TextRenderable(renderer, { content: `› ${text}`, fg: theme.user, wrapMode: 'word' }));
     },
     assistant() {
-      const node = new TextRenderable(renderer, { content: '', fg: theme.text });
+      let node: Renderable;
+      let markdown: MarkdownRenderable | null = null;
+      if (syntax) {
+        markdown = new MarkdownRenderable(renderer, {
+          content: '',
+          syntaxStyle: syntax,
+          fg: theme.text,
+          streaming: true,
+        });
+        node = markdown;
+      } else {
+        node = new TextRenderable(renderer, { content: '', fg: theme.text, wrapMode: 'word' });
+      }
       addNode(node);
       let buffer = '';
+      const paint = (): void => {
+        if (markdown) markdown.content = buffer;
+        else (node as TextRenderable).content = buffer;
+        scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+      };
       return {
         set(text) {
           buffer = text;
-          node.content = buffer;
-          scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+          paint();
         },
         append(chunk) {
           buffer += chunk;
-          node.content = buffer;
-          scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+          paint();
         },
         done() {
+          try {
+            if (markdown) markdown.streaming = false;
+          } catch {
+            /* older versions have no streaming setter */
+          }
           addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
           setFooter();
         },
       };
     },
     line(text, color) {
-      addNode(new TextRenderable(renderer, { content: text, fg: color ?? theme.dim }));
+      addNode(new TextRenderable(renderer, { content: text, fg: color ?? theme.dim, wrapMode: 'word' }));
     },
     setModel(model) {
-      subtitle.content = `${options.providerName}  ·  ${model}`;
+      subtitle.content = `${options.providerName}   ·   ${model}`;
     },
     clear() {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
@@ -308,161 +388,288 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   const run = (command: string): string =>
-    (spawnSync(command, { shell: true, cwd: options.cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stdout ?? '').trim();
+    (
+      spawnSync(command, { shell: true, cwd: options.cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }).stdout ?? ''
+    ).trim();
 
-  type Mode = 'command' | 'model' | 'sessions' | 'export' | 'file';
   let mode: Mode | null = null;
-  let items: PaletteItem[] = [];
+  let rows: Row[] = [];
   let index = 0;
   let offset = 0;
   let query = '';
+  let title = '';
+  let modalFooter = '';
+  let pendingProvider = '';
+  let pendingExport: 'md' | 'html' | 'json' | null = null;
   let paletteHandledAt = 0;
-  const WINDOW = 10;
+  const WINDOW = 12;
 
   const closeModal = (): void => {
     mode = null;
-    items = [];
+    rows = [];
     index = 0;
     offset = 0;
     query = '';
     overlay.visible = false;
   };
 
-  const drawModal = (title: string, footerHint: string): void => {
+  const drawModal = (): void => {
     for (const child of dialog.getChildren()) child.destroyRecursively();
     dialog.title = ` ${title} `;
-    const rows = items.slice(offset, offset + WINDOW);
-    dialog.height = Math.max(rows.length, 1) + 4;
 
-    dialog.add(new TextRenderable(renderer, { content: `Search  ${query}`, fg: theme.dim }));
-    if (rows.length === 0) dialog.add(new TextRenderable(renderer, { content: '(nothing here)', fg: theme.dim }));
-    rows.forEach((item, i) => {
+    const body = rows.slice(offset, offset + WINDOW);
+    const labelWidth = Math.min(
+      44,
+      Math.max(12, ...body.filter((row) => row.kind === 'item').map((row) => visibleLength(row.label))),
+    );
+
+    const searchable = mode !== 'info';
+    const lines: string[] = [];
+    if (searchable) lines.push(`Search   ${query}`.trimEnd());
+    else lines.push(' ');
+    dialog.add(new TextRenderable(renderer, { content: lines[0], fg: theme.accent }));
+
+    if (body.length === 0) {
+      dialog.add(new TextRenderable(renderer, { content: '   nothing here', fg: theme.dim }));
+    }
+
+    for (let i = 0; i < body.length; i++) {
+      const row = body[i];
       const realIndex = offset + i;
-      if (item.header) {
-        dialog.add(new TextRenderable(renderer, { content: item.label, fg: theme.accent }));
-        return;
+      if (row.kind === 'blank') {
+        dialog.add(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+        continue;
       }
-      const selected = realIndex === index;
-      const marker = selected ? '❯ ' : '  ';
-      const detail = item.detail ? `   ${item.detail}` : '';
+      if (row.kind === 'header') {
+        dialog.add(new TextRenderable(renderer, { content: `   ${row.label}`, fg: theme.accent }));
+        continue;
+      }
+      const selected = realIndex === index && mode !== 'info';
+      const marker = selected ? '❯' : ' ';
+      const check = row.checked ? '✓' : ' ';
+      const label = clip(row.label, labelWidth);
+      const detail = row.detail ? `  ${clip(row.detail, 60)}` : '';
       dialog.add(
         new TextRenderable(renderer, {
-          content: `${marker}${item.label}${detail}`,
+          content: `${marker} ${check}  ${pad(label, labelWidth)}${detail}`,
           fg: selected ? theme.pick : theme.text,
+          truncate: true,
         }),
       );
-    });
-    dialog.add(new TextRenderable(renderer, { content: footerHint, fg: theme.dim }));
+    }
+
+    dialog.add(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+    dialog.add(new TextRenderable(renderer, { content: modalFooter, fg: theme.dim, truncate: true }));
+    dialog.height = body.length + (searchable ? 5 : 4);
     overlay.visible = true;
   };
 
-  const grouped = (rows: PaletteItem[], keyOf: (item: PaletteItem) => string, headerLabel: (key: string) => string): PaletteItem[] => {
-    const out: PaletteItem[] = [];
-    let last = '';
-    for (const row of rows) {
+  const openInfo = (modalTitle: string, lines: string[]): void => {
+    mode = 'info';
+    title = modalTitle;
+    modalFooter = 'esc close';
+    rows = lines.map((line) => ({ kind: 'item' as const, label: line }));
+    index = -1;
+    offset = 0;
+    drawModal();
+  };
+
+  const withHeaders = (list: Row[], keyOf: (row: Row) => string, labelOf: (key: string) => string): Row[] => {
+    const out: Row[] = [];
+    let last = '__';
+    for (const row of list) {
       const key = keyOf(row);
       if (key !== last) {
         last = key;
-        out.push({ label: headerLabel(key), value: `__h:${key}`, header: true });
+        out.push({ kind: 'header', label: labelOf(key) });
       }
       out.push(row);
     }
     return out;
   };
 
+  const firstItem = (list: Row[]): number => list.findIndex((row) => row.kind === 'item');
+
   const openCommands = (): void => {
     mode = 'command';
+    title = 'Commands';
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
     const needle = query.toLowerCase();
     const matches = COMMANDS.filter(
-      (command) => !needle || command.label.toLowerCase().includes(needle) || command.detail.toLowerCase().includes(needle),
+      (command) => !needle || command.label.includes(needle) || command.detail.toLowerCase().includes(needle),
     );
-    items = grouped(matches as PaletteItem[], (item) => (item as Command).group ?? '', (key) => key);
-    index = items.findIndex((item) => !item.header);
+    rows = withHeaders(
+      matches.map((command) => ({ kind: 'item' as const, label: command.label, detail: command.detail, value: command.label, group: command.group }) as Row & { group: string }),
+      (row) => (row as Row & { group?: string }).group ?? '',
+      (key) => key,
+    );
+    index = firstItem(rows);
     offset = Math.max(0, index - WINDOW + 1);
-    drawModal('Commands', '↑/↓ move · tab select · esc close');
+    drawModal();
+  };
+
+  const openProviders = (): void => {
+    mode = 'provider';
+    title = 'Connect a provider';
+    modalFooter = '↑/↓ move   ·   enter connect   ·   esc close';
+    const config = loadConfig();
+    const list = allProviders(config.customProviders);
+    const item = (id: string, name: string, detail: string, checked: boolean): Row => ({
+      kind: 'item',
+      label: name,
+      detail,
+      value: id,
+      checked,
+    });
+    const connected = list.filter((provider) => resolveKey(provider));
+    const popularIds = ['command-code', 'opencode', 'opencode-go', 'anthropic', 'openai', 'google'];
+    const popular = popularIds
+      .map((id) => list.find((provider) => provider.id === id))
+      .filter((provider): provider is (typeof list)[number] => Boolean(provider) && !resolveKey(provider));
+    const rest = list
+      .filter((provider) => !resolveKey(provider) && !popularIds.includes(provider.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const out: Row[] = [];
+    const needle = query.toLowerCase();
+    const matches = (provider: (typeof list)[number]): boolean =>
+      !needle || provider.name.toLowerCase().includes(needle) || provider.id.includes(needle);
+
+    if (connected.filter(matches).length) {
+      out.push({ kind: 'header', label: 'Connected' });
+      for (const provider of connected) if (matches(provider)) out.push(item(provider.id, provider.name, 'key set', true));
+      out.push({ kind: 'blank', label: '' });
+    }
+    if (popular.filter(matches).length) {
+      out.push({ kind: 'header', label: 'Popular' });
+      for (const provider of popular) if (matches(provider)) out.push(item(provider.id, provider.name, BLURBS[provider.id] ?? provider.format, false));
+      out.push({ kind: 'blank', label: '' });
+    }
+    const restMatches = rest.filter(matches);
+    if (restMatches.length) {
+      out.push({ kind: 'header', label: 'Providers' });
+      for (const provider of restMatches) out.push(item(provider.id, provider.name, BLURBS[provider.id] ?? '', false));
+    }
+    if (out.length === 0) out.push({ kind: 'item', label: 'no provider matches', value: '' });
+
+    rows = out;
+    index = firstItem(rows);
+    offset = Math.max(0, index - WINDOW + 1);
+    drawModal();
+  };
+
+  const openThemes = (): void => {
+    mode = 'theme';
+    title = 'Switch theme';
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
+    rows = Object.keys(THEMES).map((name) => ({
+      kind: 'item' as const,
+      label: name,
+      detail: name === themeName ? 'current' : '',
+      value: name,
+      checked: name === themeName,
+    }));
+    index = Math.max(0, Object.keys(THEMES).indexOf(themeName));
+    offset = 0;
+    drawModal();
   };
 
   const openModels = async (): Promise<void> => {
     mode = 'model';
-    items = [{ label: '(loading models…)', value: '__loading' }];
+    title = 'Select model';
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
+    rows = [{ kind: 'item', label: 'loading models…', value: '' }];
     index = 0;
     offset = 0;
-    drawModal('Select model', '↑/↓ move · tab select · esc close');
+    drawModal();
+
     const models = await session.models();
     const needle = query.toLowerCase();
-    const rows: PaletteItem[] = models
+    const list: Row[] = models
       .filter((name) => !needle || name.toLowerCase().includes(needle))
-      .map((name) => ({ label: name, detail: name === session.model() ? 'current' : '', value: name }));
-    items = rows.length
-      ? grouped(rows, (item) => (item.label === session.model() ? 'current' : 'available'), (key) => (key === 'current' ? 'Current' : 'Available'))
-      : [{ label: '(no models returned — use /model <name>)', value: '__none' }];
-    index = items.findIndex((item) => !item.header);
+      .map((name) => ({
+        kind: 'item' as const,
+        label: name,
+        detail: name === session.model() ? 'current' : '',
+        value: name,
+      }));
+    rows = list.length ? withHeaders(list, (row) => (row.label === session.model() ? 'Current' : 'Available'), (key) => key) : [];
+    if (rows.length === 0) rows = [{ kind: 'item', label: 'no models returned — type: model <name>', value: '' }];
+    index = firstItem(rows);
     offset = Math.max(0, index - WINDOW + 1);
-    drawModal('Select model', '↑/↓ move · tab select · esc close');
+    drawModal();
   };
 
   const openSessions = (): void => {
     mode = 'sessions';
+    title = 'Sessions';
+    modalFooter = '↑/↓ move   ·   enter switch   ·   ctrl+d delete   ·   esc close';
     const needle = query.toLowerCase();
     const records = session.listSessions().filter((record) => !needle || record.id.toLowerCase().includes(needle));
-    const rows: PaletteItem[] = records.map((record) => {
-      const tokens = record.usage.inputTokens + record.usage.outputTokens;
-      const messages = record.messages.filter((m) => m.role !== 'system').length;
-      return { label: `${record.id}  ${record.model}`, detail: `${messages} msgs · ${tokens} tokens`, value: record.id };
-    });
-    const dayOf = (id: string): string => `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
+    const list: Row[] = records.map((record) => ({
+      kind: 'item' as const,
+      label: record.id,
+      detail: `${record.messages.filter((m) => m.role !== 'system').length} msgs  ·  ${formatTokens(
+        totalTokens(record.usage),
+      )} tokens  ·  ${record.model}`,
+      value: record.id,
+    }));
     const today = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const todayId = `${today.getFullYear()}${pad(today.getMonth() + 1)}${pad(today.getDate())}`;
-    items = rows.length
-      ? grouped(rows, (item) => dayOf(String(item.value)), (key) => (key === todayId ? 'Today' : key))
-      : [{ label: '(no saved sessions yet)', value: '__none' }];
-    index = items.findIndex((item) => !item.header);
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const todayKey = `${today.getFullYear()}${pad2(today.getMonth() + 1)}${pad2(today.getDate())}`;
+    rows = list.length
+      ? withHeaders(
+          list,
+          (row) => {
+            const id = String(row.value);
+            return `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)}`;
+          },
+          (key) => (key === todayKey.slice(0, 4) + '-' + todayKey.slice(4, 6) + '-' + todayKey.slice(6, 8) ? 'Today' : key),
+        )
+      : [{ kind: 'item', label: 'no saved sessions yet', value: '' }];
+    index = firstItem(rows);
     offset = Math.max(0, index - WINDOW + 1);
-    drawModal('Sessions', '↑/↓ move · tab switch · ctrl+d delete · esc close');
+    drawModal();
   };
 
   const openExport = (): void => {
     mode = 'export';
-    items = [
-      { label: 'markdown', detail: `${options.cwd}/<name>.md`, value: 'md' },
-      { label: 'html', detail: `${options.cwd}/<name>.html`, value: 'html' },
-      { label: 'json', detail: `${options.cwd}/<name>.json`, value: 'json' },
+    title = 'Export session';
+    modalFooter = '↑/↓ move   ·   enter export   ·   esc close';
+    rows = [
+      { kind: 'item', label: 'markdown', detail: '<name>.md', value: 'md' },
+      { kind: 'item', label: 'html', detail: '<name>.html', value: 'html' },
+      { kind: 'item', label: 'json', detail: '<name>.json', value: 'json' },
     ];
     index = 0;
     offset = 0;
-    drawModal('Export session', '↑/↓ move · tab export · esc close');
+    drawModal();
   };
 
   const openFiles = (): void => {
     mode = 'file';
+    title = 'Attach file';
+    modalFooter = '↑/↓ move   ·   enter insert   ·   esc close';
     const needle = query.toLowerCase();
-    items = listFiles(options.cwd)
+    const files = listFiles(options.cwd)
       .filter((file) => !needle || file.toLowerCase().includes(needle))
-      .slice(0, 300)
-      .map((file) => ({ label: file, value: file }));
-    if (items.length === 0) items = [{ label: '(no matching files)', value: '__none' }];
+      .slice(0, 300);
+    rows = files.length
+      ? files.map((file) => ({ kind: 'item' as const, label: file, value: file }))
+      : [{ kind: 'item', label: 'no matching files', value: '' }];
     index = 0;
     offset = 0;
-    drawModal('Attach file', '↑/↓ move · tab insert · esc close');
+    drawModal();
   };
 
   const move = (dir: 1 | -1): void => {
     let i = index + dir;
-    while (i >= 0 && i < items.length && items[i].header) i += dir;
-    if (i < 0 || i >= items.length) return;
+    while (i >= 0 && i < rows.length && rows[i].kind !== 'item') i += dir;
+    if (i < 0 || i >= rows.length) return;
     index = i;
     if (index < offset) offset = index;
     if (index >= offset + WINDOW) offset = index - WINDOW + 1;
-    mode === 'model'
-      ? drawModal('Select model', '↑/↓ move · tab select · esc close')
-      : mode === 'sessions'
-        ? drawModal('Sessions', '↑/↓ move · tab switch · ctrl+d delete · esc close')
-        : mode === 'export'
-          ? drawModal('Export session', '↑/↓ move · tab export · esc close')
-          : mode === 'file'
-            ? drawModal('Attach file', '↑/↓ move · tab insert · esc close')
-            : drawModal('Commands', '↑/↓ move · tab select · esc close');
+    drawModal();
   };
 
   const doExport = (format: 'md' | 'html' | 'json', name: string): void => {
@@ -475,125 +682,193 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     setFooter();
   };
 
+  const applyTheme = (name: string): void => {
+    themeName = name;
+    theme = THEMES[name] ?? THEMES.baton;
+    root.backgroundColor = theme.bg;
+    inputBox.borderColor = theme.accent;
+    dialog.borderColor = theme.accent;
+    dialog.backgroundColor = theme.panel;
+    subtitle.fg = theme.dim;
+    footer.fg = theme.dim;
+    input.textColor = theme.text;
+    ui.line(`theme → ${name}`, theme.dim);
+  };
+
   const accept = (): void => {
-    const item = items[index];
-    if (!item || item.header) return;
-    if (item.value === '__none' || item.value === '__loading') return;
+    const row = rows[index];
+    if (!row || row.kind !== 'item' || !row.value) return;
 
     if (mode === 'command') {
-      const command = item.label;
+      const command = row.value;
       closeModal();
       input.value = '';
-      const needsArgs = ['/model', '/provider', '/key', '/remember', '/send'];
-      if (command === '/model') void openModels();
-      else if (command === '/sessions' || command === '/resume') openSessions();
-      else if (command === '/export') openExport();
-      else if (command === '/files') openFiles();
-      else if (needsArgs.includes(command)) input.value = `${command} `;
+      if (command === 'provider') openProviders();
+      else if (command === 'theme') openThemes();
+      else if (command === 'model') void openModels();
+      else if (command === 'sessions') openSessions();
+      else if (command === 'export') openExport();
+      else if (command === 'files') openFiles();
+      else if (['key', 'remember', 'send'].includes(command)) input.value = `/${command} `;
       else void dispatch(command);
       input.focus();
       return;
     }
 
-    if (mode === 'model') {
-      session.setModel(item.value ?? item.label);
-      ui.setModel(session.model());
-      ui.line(`model → ${item.value ?? item.label}`, theme.dim);
+    if (mode === 'provider') {
+      const id = row.value;
+      pendingProvider = id;
+      const provider = allProviders(loadConfig().customProviders).find((entry) => entry.id === id);
+      if (provider && provider.needsKey && !resolveKey(provider)) {
+        closeModal();
+        mode = 'keyinput';
+        input.placeholder = `paste your ${provider.name} API key, then enter`;
+        input.value = '';
+        input.focus();
+        return;
+      }
+      session.setProvider(id);
+      ui.line(`provider → ${provider?.name ?? id}`, theme.dim);
       closeModal();
-      input.value = '';
+      input.focus();
+      return;
+    }
+
+    if (mode === 'theme') {
+      applyTheme(row.value);
+      closeModal();
+      input.focus();
+      return;
+    }
+
+    if (mode === 'model') {
+      session.setModel(row.value);
+      ui.setModel(session.model());
+      ui.line(`model → ${row.value}`, theme.dim);
+      closeModal();
       input.focus();
       return;
     }
 
     if (mode === 'sessions') {
-      if (session.resume(String(item.value))) {
+      if (session.resume(row.value)) {
         ui.clear();
-        addNode(new TextRenderable(renderer, { content: `resumed ${item.value}`, fg: theme.dim }));
-        addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+        ui.line(`resumed ${row.value}`, theme.dim);
         ui.setModel(session.model());
         setFooter();
       }
       closeModal();
-      input.value = '';
       input.focus();
       return;
     }
 
     if (mode === 'export') {
-      const format = (item.value as 'md' | 'html' | 'json') ?? 'md';
+      const format = (row.value as 'md' | 'html' | 'json') ?? 'md';
       closeModal();
       doExport(format, `session-${session.info().id}`);
-      input.value = '';
       input.focus();
       return;
     }
 
     if (mode === 'file') {
       const at = input.value.lastIndexOf('@');
-      input.value = `${input.value.slice(0, at)}@${item.value} `;
+      input.value = `${input.value.slice(0, at)}@${row.value} `;
       closeModal();
       input.focus();
     }
   };
 
+  const infoStatus = (): string[] => {
+    const info = session.info();
+    return [
+      `agent      ${options.agent}`,
+      `session    ${info.id}`,
+      `provider   ${session.provider().id}  (${session.provider().format})`,
+      `model      ${info.model}`,
+      `messages   ${info.messages}`,
+      `tokens     ${info.usage.inputTokens} in  /  ${info.usage.outputTokens} out`,
+      `requests   ${info.usage.requests}`,
+      `cwd        ${options.cwd}`,
+    ];
+  };
+
+  const infoCost = (): string[] => {
+    const model = session.model();
+    const row = loadPrices().find((entry) => entry.id === model || model.includes(entry.id));
+    const info = session.info();
+    if (!row) {
+      return [
+        `model      ${model}`,
+        'no price entry — add one to ~/.baton/prices.json',
+        `cheapest small pick   ${cheapestFor('small').model.id}`,
+      ];
+    }
+    return [
+      `model      ${row.id}  (${row.provider})`,
+      `input      $${row.in} per 1M tokens`,
+      `output     $${row.out} per 1M tokens`,
+      `this session   ${totalTokens(info.usage)} tokens`,
+      `estimate       $${cost(row, info.usage.inputTokens, info.usage.outputTokens).toFixed(4)} so far`,
+    ];
+  };
+
+  const infoDebug = (): string[] => {
+    const config = loadConfig();
+    return [
+      `node       ${process.version}`,
+      `cli        ${process.argv[1] ?? ''}`,
+      `config     ${CONFIG_PATH}`,
+      `keys       ${keysFile()}`,
+      `cwd        ${options.cwd}`,
+      `agents     ${config.agents.map((agent) => agent.name).join(', ')}`,
+      `provider   ${session.provider().id}  (${session.provider().format})`,
+      `model      ${session.model()}`,
+      `hooks      ctrl+v paste   ·   @ files   ·   / commands`,
+    ];
+  };
+
   const initAgents = (): void => {
     const file = join(options.cwd, 'AGENTS.md');
-    const body = `${protocolText()}\n`;
-    writeFileSync(file, body);
+    writeFileSync(file, `${protocolText()}\n`);
     ui.line(`wrote ${file}`, theme.user);
   };
 
-  const debugInfo = (): void => {
-    const config = loadConfig();
-    ui.line(`baton      v${process.env.npm_package_version ?? '0.1.0'}`);
-    ui.line(`node       ${process.version}`, theme.dim);
-    ui.line(`agent      ${options.agent}`, theme.dim);
-    ui.line(`provider   ${session.provider().id} (${session.provider().format})`, theme.dim);
-    ui.line(`model      ${session.model()}`, theme.dim);
-    ui.line(`session    ${session.info().id}`, theme.dim);
-    ui.line(`cwd        ${options.cwd}`, theme.dim);
-    ui.line(`config     ${CONFIG_PATH}`, theme.dim);
-    ui.line(`keys       ${keysFile()}`, theme.dim);
-    ui.line(`agents     ${config.agents.map((a) => a.name).join(', ')}`, theme.dim);
-  };
-
   const dispatch = async (line: string): Promise<void> => {
-    const trimmed = line.trim();
-    if (trimmed === '/quit' || trimmed === '/exit') {
+    const trimmed = line.trim().replace(/^\//, '');
+    const [name, ...args] = trimmed.split(/\s+/);
+
+    if (name === 'quit' || name === 'exit') {
       renderer.destroy();
       return;
     }
-    if (trimmed === '/help') {
-      ui.line('commands', theme.accent);
-      for (const command of COMMANDS) ui.line(`  ${command.label.padEnd(11)} ${command.detail}`, theme.dim);
+    if (name === 'help') {
+      openInfo(
+        'Commands',
+        COMMANDS.map((command) => `/${command.label}   ${command.detail}`),
+      );
       return;
     }
-    if (trimmed === '/debug') {
-      debugInfo();
-      return;
+    if (name === 'status') return openInfo('Status', infoStatus());
+    if (name === 'cost') return openInfo('Cost', infoCost());
+    if (name === 'debug') return openInfo('Debug', infoDebug());
+    if (name === 'context') {
+      return openInfo('Context', [...protocolText().split('\n'), ...memoryBlock().split('\n')].slice(0, 30));
     }
-    if (trimmed === '/init') {
-      initAgents();
-      return;
-    }
-    if (trimmed === '/new') {
+    if (name === 'init') return initAgents();
+    if (name === 'theme') return openThemes();
+    if (name === 'provider') return openProviders();
+    if (name === 'new') {
       session.newSession();
       ui.clear();
-      addNode(new TextRenderable(renderer, { content: `new session ${session.info().id}`, fg: theme.dim }));
-      addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+      ui.line(`new session ${session.info().id}`, theme.dim);
       setFooter();
       return;
     }
-    if (trimmed === '/diff') {
-      const stat = run('git diff --stat');
-      const diff = run('git diff');
-      ui.line(stat || '(no uncommitted changes)', theme.dim);
-      if (diff) {
-        for (const row of diff.split('\n').slice(0, 200)) ui.line(row, theme.dim);
-      }
-      return;
+    if (name === 'diff') {
+      const diff = run('git diff --stat');
+      return openInfo('Diff', (diff || '(no uncommitted changes)').split('\n'));
     }
-    if (trimmed === '/review') {
+    if (name === 'review') {
       const diff = run('git diff');
       if (!diff) {
         ui.line('(no uncommitted changes to review)', theme.dim);
@@ -602,57 +877,63 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       await session.handle(`Review my uncommitted changes and point out problems. Here is the diff:\n\n${diff}`, ui);
       return;
     }
-    if (trimmed === '/theme') {
-      themeName = themeName === 'baton' ? 'mono' : 'baton';
-      theme = THEMES[themeName];
-      renderer.setBackgroundColor?.(theme.bg);
-      root.backgroundColor = theme.bg;
-      inputBox.borderColor = theme.accent;
-      dialog.borderColor = theme.accent;
-      dialog.backgroundColor = theme.panel;
-      ui.line(`theme → ${themeName} (new lines use it)`, theme.dim);
-      return;
-    }
-    if (trimmed === '/export' || trimmed.startsWith('/export ')) {
-      const parts = trimmed.split(/\s+/).slice(1);
-      const format = (['md', 'html', 'json'] as const).includes(parts[0] as 'md') ? (parts[0] as 'md') : null;
-      if (!format && parts.length === 0) {
-        openExport();
-        return;
-      }
-      doExport(format ?? 'md', parts[1] ?? '');
-      return;
-    }
-    if (trimmed === '/update') {
+    if (name === 'update') {
       ui.line('updating baton…', theme.dim);
       const result = runUpdate();
       ui.line(result.output || '(no output)', theme.dim);
-      if (result.ok) {
-        ui.line('updated — restarting…', theme.user);
-        setTimeout(() => {
-          renderer.destroy();
-          const child = spawnSync(process.execPath, process.argv.slice(1), { stdio: 'inherit' });
-          process.exit(child.status ?? 0);
-        }, 400);
-      } else {
-        ui.line('update failed (is baton published to npm?)', theme.error);
+      if (!result.ok) {
+        ui.line('update failed — baton is still installed as it was', theme.error);
+        return;
       }
+      ui.line('updated — restarting…', theme.user);
+      setTimeout(() => {
+        const argv = process.argv.slice(1);
+        try {
+          renderer.destroy();
+          const child = spawnSync(process.argv[0] as string, argv, { stdio: 'inherit' });
+          process.exit(child.status ?? 0);
+        } catch {
+          console.log('updated. run `baton` to start the new version.');
+          process.exit(0);
+        }
+      }, 400);
       return;
     }
+    if (name === 'export') {
+      const format = (['md', 'html', 'json'] as const).includes(args[0] as 'md') ? (args[0] as 'md') : null;
+      if (!format) return openExport();
+      return doExport(format, args[1] ?? '');
+    }
+
     await session.handle(line, ui);
   };
 
   input.on(InputRenderableEvents.INPUT, () => {
     const value = input.value;
-    if (mode === 'model' || mode === 'sessions' || mode === 'file') {
-      query = value.replace(/^\/[a-z]*\s*/, '').replace(/^.*@/, '');
-      if (mode === 'model') void openModels();
-      else if (mode === 'sessions') openSessions();
-      else openFiles();
+    if (mode === 'keyinput') return;
+    if (mode === 'model' || mode === 'sessions' || mode === 'file' || mode === 'provider' || mode === 'command') {
+      if (mode === 'provider' || mode === 'command') {
+        query = value.startsWith('/') ? value.slice(1) : value;
+        if (mode === 'provider') openProviders();
+        else openCommands();
+        return;
+      }
+      if (mode === 'model') {
+        query = value.replace(/^\/?model\s*/, '');
+        void openModels();
+        return;
+      }
+      if (mode === 'sessions') {
+        query = value.replace(/^\/?sessions\s*/, '').replace(/^\/?resume\s*/, '');
+        openSessions();
+        return;
+      }
+      query = value.slice(value.lastIndexOf('@') + 1);
+      openFiles();
       return;
     }
     if (value.startsWith('/') && !value.includes(' ')) {
-      query = value;
+      query = value.slice(1);
       openCommands();
       return;
     }
@@ -660,12 +941,33 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (at >= 0) {
       query = value.slice(at + 1);
       openFiles();
-      return;
     }
-    if (mode === 'command' && !value.startsWith('/')) closeModal();
   });
 
   renderer.keyInput.on('keypress', (key: any) => {
+    const modeBefore = mode;
+    if (process.env.BATON_DEBUG_KEYS) {
+      try {
+        appendFileSync('/tmp/baton-keylog.txt', `key=${key?.name} before=${modeBefore}\n`);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      handleKey(key);
+    } catch (error) {
+      ui.line(`key handling failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+    }
+    if (process.env.BATON_DEBUG_KEYS) {
+      try {
+        appendFileSync('/tmp/baton-keylog.txt', `  after=${mode} rows=${rows.length} title=${title}\n`);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  const handleKey = (key: any): void => {
     if (key?.ctrl && key?.name === 'v') {
       const image = clipboardImage();
       if (image) {
@@ -683,10 +985,16 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (!mode) {
       if (key?.name === 'escape' && input.value) {
         input.value = '';
-        closeModal();
       }
       return;
     }
+
+    if (mode === 'info') {
+      if (key?.name === 'escape' || key?.name === 'return' || key?.name === 'enter') closeModal();
+      return;
+    }
+
+    if (mode === 'keyinput') return;
 
     if (key?.name === 'up') move(-1);
     else if (key?.name === 'down') move(1);
@@ -695,35 +1003,38 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       accept();
     } else if (key?.name === 'escape') closeModal();
     else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
-      const item = items[index];
-      if (item && !item.header && item.value && !String(item.value).startsWith('__')) {
-        session.deleteSession(String(item.value));
-        ui.line(`deleted ${item.value}`, theme.dim);
+      const row = rows[index];
+      if (row?.value) {
+        session.deleteSession(row.value);
+        ui.line(`deleted ${row.value}`, theme.dim);
         openSessions();
       }
     }
-  });
+  };
 
   input.on(InputRenderableEvents.ENTER, () => {
-    if (Date.now() - paletteHandledAt < 100) return;
+    if (Date.now() - paletteHandledAt < 120) return;
     const value = input.value;
     input.value = '';
+
+    if (mode === 'keyinput' && pendingProvider) {
+      const key = value.trim();
+      if (key) {
+        saveKey(pendingProvider, key);
+        session.setProvider(pendingProvider);
+        const provider = allProviders(loadConfig().customProviders).find((entry) => entry.id === pendingProvider);
+        ui.line(`connected ${provider?.name ?? pendingProvider}`, theme.user);
+      }
+      pendingProvider = '';
+      mode = null;
+      input.placeholder = 'Ask anything…    /  commands    @  files';
+      setFooter();
+      input.focus();
+      return;
+    }
+
     if (!value.trim()) return;
     closeModal();
-
-    if (mode === null && value.trim() === '/model') {
-      void openModels();
-      return;
-    }
-    if (value.trim() === '/sessions' || value.trim() === '/resume') {
-      openSessions();
-      return;
-    }
-    if (value.trim() === '/files' || value.trim() === '@') {
-      openFiles();
-      return;
-    }
-
     void dispatch(value)
       .catch((error: unknown) => {
         ui.line(`error: ${error instanceof Error ? error.message : 'request failed'}`, theme.error);
@@ -734,9 +1045,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       });
   });
 
-  ui.line('Welcome to Baton. Type a request, / for commands, @ to attach a file.', theme.dim);
+  ui.line('Welcome to Baton.  Type a request,  /  for commands,  @  to attach a file.', theme.dim);
   ui.line('', theme.dim);
   setFooter();
   input.focus();
-  addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
 }

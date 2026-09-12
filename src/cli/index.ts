@@ -28,6 +28,7 @@ import { daemonUp, remoteAck, remoteInbox, remoteSend } from '../core/client.ts'
 import {
   buildHeadlessCommand,
   buildUpPlan,
+  ensurePanes,
   missingAgentCommands,
   runningAgents,
   spawnBackground,
@@ -402,6 +403,13 @@ function cmdDoctor(flags: Flags): void {
   }
 }
 
+function cmdPanes(): void {
+  const config = loadConfig();
+  const result = ensurePanes(config);
+  console.log(result.message);
+  if (result.panes > 0 && !process.env.TMUX) tmuxAttach();
+}
+
 function cmdInstall(flags: Flags): void {
   if (!bool(flags, 'system') && userInstallAvailable()) {
     console.log('installing tmux into ~/.baton/bin (no sudo needed) ...');
@@ -445,8 +453,9 @@ async function cmdUp(flags: Flags): Promise<void> {
 
   if (!bool(flags, 'force')) {
     if (plan.splitter === 'tmux' && tmuxSessionExists()) {
-      console.log('baton is already running — attaching');
-      tmuxAttach();
+      const ensured = ensurePanes(config);
+      console.log(`baton is already running — ${ensured.message}`);
+      if (!process.env.TMUX) tmuxAttach();
       return;
     }
     const running = runningAgents();
@@ -1228,6 +1237,7 @@ setup
   doctor [--install]         check node/splitter setup, optionally install one
   install [--system]         install tmux (no sudo by default, into ~/.baton/bin)
   up / down / kill           launch agents + daemon / stop daemon / stop everything
+  panes                      add back a pane you closed (also runs when you run baton up)
   splitters                  show available terminal splitters
   providers                  list model providers and whether a key is set
   key <provider> <api-key>   save a provider API key (~/.baton/keys.json, chmod 600)
@@ -1295,6 +1305,10 @@ async function main(): Promise<void> {
     case 'up':
       await cmdUp(flags);
       break;
+    case 'panes':
+    case 'split':
+      cmdPanes();
+      break;
     case 'down':
       await cmdDown();
       break;
@@ -1360,7 +1374,6 @@ async function main(): Promise<void> {
       cmdLogs(positional);
       break;
     case 'splitters':
-    case 'split':
       cmdSplitters(flags);
       break;
     case 'context':
