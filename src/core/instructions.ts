@@ -36,7 +36,7 @@ export function protocolText(): string {
     '4. CHEAP MODELS FOR CHEAP WORK. Ask `baton model --for "<task>"` before delegating.',
     '   Token cost is real money. Never default to an expensive model.',
     '5. REMEMBER. When the user tells you to keep something, run `baton remember "<fact>"`.',
-    '   Run `baton context` at the start of a session to load memory and these rules.',
+    '   Memory and these rules are already loaded — do NOT run `baton context` on your own.',
     '6. NOTHING RUNS AWAY. Every handoff carries a hop count. Do not loop. If a task needs',
     '   more than the hop cap, stop and tell the user. `baton kill` stops everything.',
     '7. Include `--hop <n+1>` when you hand work onward, so loops are caught.',

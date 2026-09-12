@@ -404,6 +404,31 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   let lastReply = '';
+  let segmentBreak = false;
+
+  const normalize = (text: string): string => {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of text.split('\n')) {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        out.push(line);
+        continue;
+      }
+      if (inFence) {
+        out.push(line);
+        continue;
+      }
+      if (/^\s*([-*_])\1{2,}\s*$/.test(line) || /^\s*=+\s*$/.test(line)) continue;
+      out.push(
+        line
+          .replace(/^\s{0,3}#{1,6}\s+/, '')
+          .replace(/\*\*(.+?)\*\*/g, '$1')
+          .replace(/(^|\s)\*(?!\s)([^*\n]+?)(?<!\s)\*(?=\s|[.,!?]|$)/g, '$1$2'),
+      );
+    }
+    return out.join('\n');
+  };
 
   const ui: ChatUi = {
     user(text) {
@@ -415,27 +440,39 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     },
     assistant() {
       addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
-      const node = new TextRenderable(renderer, {
-        content: '',
-        fg: theme.text,
-        wrapMode: 'word',
-        flexShrink: 0,
-        selectable: true,
-      });
-      addNode(node);
+      let node: TextRenderable | null = null;
       let buffer = '';
       const paint = (): void => {
-        node.content = buffer;
+        if (buffer.length === 0) return;
+        if (!node) {
+          node = new TextRenderable(renderer, {
+            content: '',
+            fg: theme.text,
+            wrapMode: 'word',
+            flexShrink: 0,
+            selectable: true,
+          });
+          addNode(node);
+        }
+        node.content = normalize(buffer);
         scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
+      };
+      const fresh = (): void => {
+        if (!segmentBreak) return;
+        segmentBreak = false;
+        node = null;
+        buffer = '';
       };
       return {
         set(text) {
           stopThinking();
+          fresh();
           buffer = text;
           paint();
         },
         append(chunk) {
           stopThinking();
+          fresh();
           buffer += chunk;
           paint();
         },
@@ -447,6 +484,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       };
     },
     line(text, color) {
+      segmentBreak = true;
       const rows = text.split('\n');
       const shown = rows
         .slice(0, 24)
