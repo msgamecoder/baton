@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
@@ -111,6 +111,7 @@ const COMMANDS: Command[] = [
   { group: 'baton', label: 'memory', detail: 'what baton remembers about you' },
   { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
   { group: 'baton', label: 'copy', detail: 'copy the last reply' },
+  { group: 'baton', label: 'menu', detail: 'menu: copy, or open the other agent' },
   { group: 'baton', label: 'context', detail: 'protocol and memory' },
   { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
 
@@ -254,7 +255,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     screenMode: 'alternate-screen',
     targetFps: 60,
     useMouse: true,
-    enableMouseMovement: false,
+    enableMouseMovement: true,
   });
 
   const root = new BoxRenderable(renderer, {
@@ -402,9 +403,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   const ui: ChatUi = {
     user(text) {
-      addNode(new TextRenderable(renderer, { content: `› ${text}`, fg: theme.user, wrapMode: 'word', selectable: true }));
+      addNode(
+        new TextRenderable(renderer, { content: `you  ›  ${text}`, fg: theme.user, wrapMode: 'word', selectable: true }),
+      );
     },
     assistant() {
+      addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
       let node: Renderable;
       let markdown: MarkdownRenderable | null = null;
       if (syntax) {
@@ -1172,6 +1176,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
     if (name === 'memory') return openInfo('Memory', memoryLines());
     if (name === 'tasks') return openInfo('Tasks', formatTaskList(session.info().id));
+    if (name === 'menu') {
+      openMenu();
+      return;
+    }
     if (name === 'copy') {
       if (!lastReply) {
         ui.line('nothing to copy yet', theme.dim);
@@ -1464,16 +1472,16 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       });
   });
 
-  renderer.on('mouse' as never, (event: { type?: string; button?: string }) => {
-    if (process.env.BATON_DEBUG_MOUSE) {
-      try {
-        appendFileSync('/tmp/baton-mouse.log', `${JSON.stringify(event)}\n`);
-      } catch {
-        /* ignore */
-      }
+  const onRightClick = (event: { button?: string }): void => {
+    if (event?.button === 'right' && !mode && !inputPurpose) openMenu();
+  };
+  for (const target of [renderer.root, root, scroll, chatBox] as unknown as Array<{ onMouseDown?: unknown }>) {
+    try {
+      target.onMouseDown = onRightClick;
+    } catch {
+      /* some nodes may not accept handlers */
     }
-    if (event?.type === 'down' && event?.button === 'right' && !mode && !inputPurpose) openMenu();
-  });
+  }
 
   renderer.on('selection' as never, () => {
     try {

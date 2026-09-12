@@ -17,7 +17,7 @@ import { listModels } from '../providers/client.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildSystemPrompt, runTurn } from './loop.ts';
-import type { ChatMessage } from '../providers/types.ts';
+import type { ChatMessage, ToolCall } from '../providers/types.ts';
 import {
   deleteSessionRecord,
   emptyUsage,
@@ -378,6 +378,49 @@ export function createSession(options: SessionOptions): Session {
   const historySize = (): number =>
     messages.reduce((total, message) => total + (typeof message.content === 'string' ? message.content.length : 0), 0);
 
+  const toolLabel = (call: ToolCall): { text: string; color: string } => {
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(call.arguments || '{}') as Record<string, unknown>;
+    } catch {
+      args = {};
+    }
+    const lines = (value: unknown): number =>
+      typeof value === 'string' && value.length > 0 ? value.split('\n').length : 0;
+    const path = String(args.path ?? '');
+
+    switch (call.name) {
+      case 'edit_file':
+        return { text: `EDIT   ${path}   +${lines(args.new_string)} −${lines(args.old_string)}`, color: '#7fd1b9' };
+      case 'write_file':
+        return { text: `WRITE  ${path}   (${lines(args.content)} lines)`, color: '#7fd1b9' };
+      case 'read_file':
+        return { text: `READ   ${path}`, color: '#6b6b8f' };
+      case 'list_dir':
+        return { text: `LIST   ${path || '.'}`, color: '#6b6b8f' };
+      case 'glob':
+        return { text: `GLOB   ${String(args.pattern ?? '')}`, color: '#6b6b8f' };
+      case 'grep':
+        return { text: `GREP   ${String(args.pattern ?? '')}`, color: '#6b6b8f' };
+      case 'shell':
+        return { text: `SHELL  ${String(args.command ?? '').slice(0, 110)}`, color: '#e0b070' };
+      case 'web_search':
+        return { text: `WEB    ${String(args.query ?? '')}`, color: '#c8a2ff' };
+      case 'web_fetch':
+        return { text: `FETCH  ${String(args.url ?? '').slice(0, 90)}`, color: '#c8a2ff' };
+      case 'ask_user':
+        return { text: `ASK    ${String(args.question ?? '').slice(0, 90)}`, color: '#c8c0ff' };
+      case 'task_create':
+        return { text: `TASK   + ${String(args.subject ?? '')}`, color: '#8b7bd8' };
+      case 'task_update':
+        return { text: `TASK   ${String(args.id ?? '')} → ${String(args.status ?? '')}`, color: '#8b7bd8' };
+      case 'task_list':
+        return { text: 'TASK   list', color: '#8b7bd8' };
+      default:
+        return { text: call.name.toUpperCase(), color: '#6b6b8f' };
+    }
+  };
+
   return {
     provider: () => provider,
     model: () => model,
@@ -514,10 +557,13 @@ export function createSession(options: SessionOptions): Session {
             onText: (chunk) => stream.append(chunk),
             onRetry: (attempt, message) =>
               ui.line(`connecting… retry ${attempt}/10  (${message.slice(0, 90)})`, '#e0b070'),
-            onToolStart: (call) => ui.line(`-> ${call.name}`, '#e0b070'),
+            onToolStart: (call) => {
+              const label = toolLabel(call);
+              ui.line(label.text, label.color);
+            },
             onToolEnd: (_call, output, isError) => {
               const first = output.split('\n')[0].slice(0, 120);
-              ui.line(`${isError ? '! ' : '  '}${first}`, isError ? '#e06c75' : '#6b6b8f');
+              ui.line(`   └ ${first}`, isError ? '#e06c75' : '#565672');
             },
           },
         });
