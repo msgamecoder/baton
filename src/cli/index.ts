@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
@@ -458,10 +458,24 @@ async function cmdUp(flags: Flags): Promise<void> {
 
   if (!bool(flags, 'force')) {
     if (plan.splitter === 'tmux' && tmuxSessionExists()) {
-      const ensured = ensurePanes(config);
-      console.log(`baton is already running — ${ensured.message}`);
-      if (!process.env.TMUX) tmuxAttach();
-      return;
+      const stampPath = join(BATON_HOME, 'session-stamp');
+      let stamp = '';
+      try {
+        stamp = String(statSync(process.argv[1] as string).mtimeMs);
+      } catch {
+        stamp = '';
+      }
+      const previous = existsSync(stampPath) ? readFileSync(stampPath, 'utf8').trim() : '';
+      if (stamp && previous && previous !== stamp) {
+        spawnSync(tmuxBin(), ['kill-session', '-t', 'baton'], { stdio: 'ignore' });
+        console.log('baton changed since that session started — restarting the panes with the new code');
+      } else {
+        if (stamp) writeFileSync(stampPath, stamp);
+        const ensured = ensurePanes(config);
+        console.log(`baton is already running — ${ensured.message}`);
+        if (!process.env.TMUX) tmuxAttach();
+        return;
+      }
     }
     const running = runningAgents();
     if (running.length > 0) {

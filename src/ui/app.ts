@@ -256,21 +256,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     backgroundColor: theme.bg,
     screenMode: 'alternate-screen',
     targetFps: 60,
+    useMouse: false,
+    enableMouseMovement: false,
   });
 
-  try {
-    process.stdout.write('\u001b]0;baton\u0007');
-  } catch {
-    /* title is best effort */
-  }
   const assertTitle = (): void => {
-    try {
-      process.stdout.write('\u001b]0;baton\u0007');
-    } catch {
-      /* ignore */
-    }
+    /* nothing: the renderer owns the terminal, the title is set via tmux */
   };
-  setTimeout(assertTitle, 1000).unref?.();
 
   const root = new BoxRenderable(renderer, {
     id: 'root',
@@ -1523,7 +1515,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const onRightClick = (event: { button?: string }): void => {
     if (event?.button === 'right' && !mode && !inputPurpose) openMenu();
   };
-  for (const target of [renderer.root, root, scroll, chatBox] as unknown as Array<{ onMouseDown?: unknown }>) {
+  for (const target of [renderer.root, root, scroll] as unknown as Array<{ onMouseDown?: unknown }>) {
     try {
       target.onMouseDown = onRightClick;
     } catch {
