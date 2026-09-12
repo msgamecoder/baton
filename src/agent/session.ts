@@ -209,6 +209,7 @@ export function createSession(options: SessionOptions): Session {
       agent: options.agent,
       provider: provider.id,
       model,
+      cwd: options.cwd,
       createdAt,
       updatedAt: Date.now(),
       messages,
@@ -495,7 +496,7 @@ export function createSession(options: SessionOptions): Session {
     },
     compact,
     toolLabel,
-    listSessions: () => listSessionRecords(),
+    listSessions: () => listSessionRecords(options.cwd),
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
       sessionId = newSessionId();
@@ -532,6 +533,7 @@ export function createSession(options: SessionOptions): Session {
           agent: options.agent,
           provider: provider.id,
           model,
+          cwd: options.cwd,
           createdAt,
           updatedAt: Date.now(),
           messages,

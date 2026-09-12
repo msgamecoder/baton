@@ -59,7 +59,8 @@ export function resolveAgent(agents: AgentConfig[], ref?: string): AgentConfig |
 
 /** How an agent is shown in the UI: "Nova · left". */
 export function agentLabel(agent: AgentConfig): string {
-  return agent.role ? `${agent.name} · ${agent.role}` : agent.name;
+  if (!agent.role || agent.name.toLowerCase() === agent.role.toLowerCase()) return agent.name;
+  return `${agent.name} · ${agent.role}`;
 }
 
 /** Every handle for an agent — its name and its role — for matching relay traffic. */

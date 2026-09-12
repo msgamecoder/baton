@@ -13,6 +13,7 @@ const cost = await import('../src/core/cost.ts');
 const session = await import('../src/core/session.ts');
 const audit = await import('../src/core/audit.ts');
 const probe = await import('../src/core/probe.ts');
+const history = await import('../src/agent/history.ts');
 const { checkLoop, BatonError } = await import('../src/core/schema.ts');
 
 test('memory: remember, recall, forget', () => {
@@ -79,6 +80,31 @@ test('probe: project hints come from .env and package.json', () => {
   const ports = hints.map((h) => h.port);
   assert.ok(ports.includes(4321));
   assert.ok(ports.includes(5173));
+});
+
+test('sessions are listed per project', () => {
+  const base = {
+    agent: 'a',
+    provider: 'p',
+    model: 'm',
+    createdAt: 1,
+    updatedAt: 1,
+    messages: [],
+    usage: { inputTokens: 0, outputTokens: 0, requests: 0 },
+  };
+  history.saveSessionRecord({ ...base, id: 'proj-a-1', cwd: '/tmp/proj-a' });
+  history.saveSessionRecord({ ...base, id: 'proj-b-1', cwd: '/tmp/proj-b' });
+  history.saveSessionRecord({ ...base, id: 'legacy-no-cwd' });
+
+  assert.deepEqual(
+    history.listSessionRecords('/tmp/proj-a').map((record) => record.id),
+    ['proj-a-1'],
+  );
+  assert.deepEqual(
+    history.listSessionRecords('/tmp/proj-b').map((record) => record.id),
+    ['proj-b-1'],
+  );
+  assert.ok(history.listSessionRecords().some((record) => record.id === 'legacy-no-cwd'));
 });
 
 test('guard: hop limit rejects a runaway handoff', () => {

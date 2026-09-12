@@ -415,6 +415,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     return Math.max(4, Number(box?.height ?? 24));
   };
 
+  // width available to chat content — the root pads 2 columns on each side
+  const contentWidth = (): number => {
+    const columns = Number(process.stdout.columns);
+    const usable = Number.isFinite(columns) && columns > 0 ? columns : 100;
+    return Math.max(40, usable - 6);
+  };
+
   const atBottom = (): boolean => {
     try {
       return scroll.scrollTop + viewportHeight() >= scroll.scrollHeight - 2;
@@ -544,7 +551,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
               });
           addNode(node);
         }
-        if (node instanceof MarkdownRenderable) node.content = formatTables(buffer);
+        if (node instanceof MarkdownRenderable) node.content = formatTables(buffer, contentWidth());
         else node.content = normalize(buffer);
         keepBottom();
       };
@@ -600,7 +607,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       const node =
         syntax !== null
           ? new MarkdownRenderable(renderer, {
-              content: formatTables(text),
+              content: formatTables(text, contentWidth()),
               syntaxStyle: syntax,
               fg: color ?? theme.text,
               flexShrink: 0,
@@ -634,7 +641,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
     },
     setModel(model) {
-      subtitle.content = `${options.providerName}   ·   ${model}   ·   v${options.version}`;
+      subtitle.content = `${selfLabel}   ·   ${options.providerName}   ·   ${model}   ·   v${options.version}`;
     },
     clear() {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
@@ -883,12 +890,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           record.id.toLowerCase().includes(needle) ||
           (record.title ?? '').toLowerCase().includes(needle),
       );
+    const current = session.info().id;
     const list: Row[] = records.map((record) => ({
       kind: 'item' as const,
-      label: record.title || record.id,
+      label: `${record.id === current ? '· ' : ''}${record.title || record.id}`,
       detail: `${record.messages.filter((m) => m.role !== 'system').length} msgs  ·  ${formatTokens(
         totalTokens(record.usage),
-      )} tokens  ·  ${record.model}  ·  ${record.id}`,
+      )} tokens  ·  ${record.model}  ·  ${record.id}${record.id === current ? '  ·  current' : ''}`,
       value: record.id,
     }));
     const today = new Date();
@@ -907,6 +915,19 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     index = firstItem(rows);
     offset = Math.max(0, index - WINDOW + 1);
     drawModal();
+  };
+
+  const deleteSelectedSession = (): void => {
+    const row = rows[index];
+    if (!row?.value) return;
+    const id = String(row.value);
+    if (id === session.info().id) {
+      ui.line('you are in this session — switch to another one before you can delete it', theme.error);
+      return;
+    }
+    session.deleteSession(id);
+    ui.line(`deleted ${id}`, theme.dim);
+    openSessions();
   };
 
   const openExport = (): void => {
@@ -1578,6 +1599,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   // did, so drive the palettes from the keys and pastes it actually handles.
   const inputHandleKeyPress = input.handleKeyPress.bind(input);
   input.handleKeyPress = (key: any): boolean => {
+    // ctrl+d is a built-in textarea binding (delete char), so take it first when a list is open
+    if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
+      deleteSelectedSession();
+      return true;
+    }
     const before = input.plainText;
     const handled = inputHandleKeyPress(key);
     // only react to keys that changed the text, so arrow keys keep navigating a palette
@@ -1745,24 +1771,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         if (inputText()) setInput('');
       }
     } else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
-      const row = rows[index];
-      if (row?.value) {
-        const id = String(row.value);
-        const wasCurrent = id === session.info().id;
-        session.deleteSession(id);
-        if (wasCurrent) {
-          session.newSession();
-          ui.clear();
-          ui.line('that was your current session — started a new one', theme.user);
-          ui.setModel(session.model());
-          setFooter();
-          closeModal();
-          input.focus();
-          return;
-        }
-        ui.line(`deleted ${id}`, theme.dim);
-        openSessions();
-      }
+      deleteSelectedSession();
     }
   };
 

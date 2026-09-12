@@ -15,6 +15,8 @@ export interface SessionRecord {
   agent: string;
   provider: string;
   model: string;
+  /** the project this session belongs to — sessions are listed per working directory */
+  cwd?: string;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
@@ -63,13 +65,19 @@ export function readSessionRecord(id: string): SessionRecord | null {
   }
 }
 
-export function listSessionRecords(): SessionRecord[] {
+/**
+ * Sessions recorded for a project. Pass the working directory to see only that
+ * project's sessions; omit it for everything (used by tooling/tests).
+ */
+export function listSessionRecords(cwd?: string): SessionRecord[] {
   if (!existsSync(CHAT_DIR)) return [];
   const out: SessionRecord[] = [];
   for (const file of readdirSync(CHAT_DIR)) {
     if (!file.endsWith('.json')) continue;
     try {
-      out.push(JSON.parse(readFileSync(join(CHAT_DIR, file), 'utf8')) as SessionRecord);
+      const record = JSON.parse(readFileSync(join(CHAT_DIR, file), 'utf8')) as SessionRecord;
+      if (cwd && record.cwd !== cwd) continue;
+      out.push(record);
     } catch {
       continue;
     }

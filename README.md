@@ -63,6 +63,10 @@ baton chat              talk to the agent here (--agent, --provider, --model, --
 baton ask "…"           one-shot headless run (--yes to allow tools)
 ```
 
+Sessions are kept **per project** — `/sessions` lists the ones recorded in the current
+working directory, so a new project starts with a clean list. `ctrl+d` deletes the selected
+session, but not the one you are currently in (switch away first).
+
 ## The interface
 
 `baton chat` opens Baton's **own full-screen terminal UI**, built on

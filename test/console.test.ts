@@ -64,6 +64,30 @@ test('markdown tables become aligned text', async () => {
   assert.equal(formatTables('no table here'), 'no table here');
 });
 
+test('wide tables wrap inside their cells and fit the width', async () => {
+  const { formatTables } = await import('../src/core/tables.ts');
+  const markdown = [
+    '| Criteria | HTML (+CSS/JS) | React |',
+    '|---|---|---|',
+    '| What it is | Markup language + DOM | JS library for building UIs |',
+    '| Long-term maintenance at scale | Unmanageable past a few pages | Component + ecosystem (router, state, testing) carries it |',
+  ].join('\n');
+
+  const out = formatTables(markdown, 60);
+  const rows = out
+    .split('\n')
+    .filter((line) => line.startsWith('│') || line.startsWith('├'));
+  assert.ok(rows.length >= 4, 'the table rendered');
+  for (const row of rows) assert.ok(row.length <= 60, `row is ${row.length} wide, expected <= 60`);
+  assert.equal(new Set(rows.map((row) => row.length)).size, 1, 'every row lines up to one width');
+  assert.ok(out.includes('Component +'), 'long cell content wrapped instead of being cut');
+
+  // inline markdown is stripped so the visible width matches the alignment
+  const inline = formatTables('| **Bold** | `code` |\n|---|---|\n| **x** | `y` |', 80);
+  assert.equal(inline.includes('**'), false);
+  assert.equal(inline.includes('`'), false);
+});
+
 test('write and edit report line counts like a diff', async () => {
   const { runTool } = await import('../src/agent/tools.ts');
   const { mkdtempSync } = await import('node:fs');
@@ -248,6 +272,7 @@ test('agents answer to their name and their role', async () => {
   assert.equal(resolveAgent(agents, 'right')?.name, 'Rex');
   assert.equal(resolveAgent(agents, 'nobody'), undefined);
   assert.equal(agentLabel(agents[0]), 'Nova · left');
+  assert.equal(agentLabel({ name: 'left', role: 'left' }), 'left', 'a name equal to its role is not repeated');
   assert.deepEqual(agentAliases(agents, 'left').sort(), ['Nova', 'left'].sort());
   assert.deepEqual(duplicateAgentNames([{ name: 'Nova' }, { name: 'nova' }]), ['nova']);
   assert.deepEqual(duplicateAgentNames(agents), []);
