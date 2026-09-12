@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { BATON_HOME, CONFIG_PATH, DAEMON_PORT, LOG_PATH } from '../core/paths.ts';
@@ -522,6 +522,41 @@ async function cmdUp(flags: Flags): Promise<void> {
   for (const command of plan.commands) {
     const result = spawnSync(command, { shell: true, stdio: 'inherit' });
     if (result.status !== 0 && result.status !== null) console.log(`(${plan.splitter} exited ${result.status})`);
+  }
+  afterPanes();
+}
+
+function afterPanes(): void {
+  try {
+    const dir = join(BATON_HOME, 'chats');
+    if (!existsSync(dir)) return;
+    const files = readdirSync(dir).filter((name) => name.endsWith('.json'));
+    if (files.length === 0) return;
+    let newest = files[0];
+    for (const name of files) {
+      if (statSync(join(dir, name)).mtimeMs > statSync(join(dir, newest)).mtimeMs) newest = name;
+    }
+    const record = JSON.parse(readFileSync(join(dir, newest), 'utf8')) as {
+      id?: string;
+      agent?: string;
+      messages?: unknown[];
+      usage?: { inputTokens?: number; outputTokens?: number };
+    };
+    const id = record.id ?? newest.replace(/\.json$/, '');
+    const usage = record.usage ?? {};
+    const tokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+    console.log('');
+    console.log(`thanks — that was a good session with baton ${version()}`);
+    console.log('');
+    console.log(`  agent      ${record.agent ?? ''}`);
+    console.log(`  session    ${id}`);
+    console.log(`  messages   ${Array.isArray(record.messages) ? record.messages.length : 0}`);
+    console.log(`  tokens     ${tokens.toLocaleString()}`);
+    console.log('');
+    console.log(`come back with:  baton ${id}`);
+    console.log('');
+  } catch {
+    /* the summary is best effort */
   }
 }
 
