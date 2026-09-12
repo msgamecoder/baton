@@ -16,6 +16,7 @@ import {
 } from '@opentui/core';
 import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
 import { protocolText } from '../core/instructions.ts';
+import { formatTables } from '../core/tables.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { loadConfig, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
@@ -517,7 +518,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
               });
           addNode(node);
         }
-        if (node instanceof MarkdownRenderable) node.content = buffer;
+        if (node instanceof MarkdownRenderable) node.content = formatTables(buffer);
         else node.content = normalize(buffer);
         keepBottom();
       };
@@ -573,7 +574,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       const node =
         syntax !== null
           ? new MarkdownRenderable(renderer, {
-              content: text,
+              content: formatTables(text),
               syntaxStyle: syntax,
               fg: color ?? theme.text,
               flexShrink: 0,

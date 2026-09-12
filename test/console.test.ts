@@ -50,6 +50,20 @@ test('sanitizeHistory never leaves a tool_calls without its result', () => {
   assert.equal(repaired[repaired.length - 1].role, 'tool');
 });
 
+test('markdown tables become aligned text', async () => {
+  const { formatTables } = await import('../src/core/tables.ts');
+  const out = formatTables('| A | B |\n|---|----|\n| xx | y |\n| z | wwww |');
+  assert.ok(out.includes('│'), out);
+  assert.ok(out.includes('├'), 'has a header rule');
+  assert.equal(out.includes('|---'), false, 'separator row is gone');
+  const widths = out
+    .split('\n')
+    .filter((line) => line.startsWith('│'))
+    .map((line) => line.length);
+  assert.equal(new Set(widths).size, 1, 'every row lines up to the same width');
+  assert.equal(formatTables('no table here'), 'no table here');
+});
+
 test('write and edit report line counts like a diff', async () => {
   const { runTool } = await import('../src/agent/tools.ts');
   const { mkdtempSync } = await import('node:fs');
