@@ -467,7 +467,7 @@ async function cmdUp(flags: Flags): Promise<void> {
         stamp = '';
       }
       const previous = existsSync(stampPath) ? readFileSync(stampPath, 'utf8').trim() : '';
-      const changed = Boolean(stamp && previous && previous !== stamp);
+      const changed = Boolean(stamp && (!previous || previous !== stamp));
       if (changed || !tmuxSessionAlive()) {
         spawnSync(tmuxBin(), ['kill-session', '-t', 'baton'], { stdio: 'ignore' });
         console.log(
