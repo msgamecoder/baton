@@ -91,3 +91,57 @@ test('provider session header follows the baton session, not the process', async
   setProviderSession('20260912-121500');
   assert.equal(providerHeaders(provider, 'k')['x-opencode-session'], '20260912-121500');
 });
+
+test('history sanitizer drops an orphan tool result', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const cleaned = sanitizeHistory([
+    { role: 'user', content: 'hi' },
+    { role: 'tool', content: 'stray', toolCallId: 'gone', name: 'shell' },
+    { role: 'assistant', content: 'hello' },
+  ]);
+  assert.equal(cleaned.length, 2);
+  assert.equal(cleaned[0].content, 'hi');
+  assert.equal(cleaned[1].content, 'hello');
+});
+
+test('history sanitizer keeps only tool calls that were answered', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const cleaned = sanitizeHistory([
+    { role: 'user', content: 'do it' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [
+        { id: 'a', name: 'shell', arguments: '{}' },
+        { id: 'b', name: 'read_file', arguments: '{}' },
+      ],
+    },
+    { role: 'tool', content: 'ran', toolCallId: 'a', name: 'shell' },
+  ]);
+  assert.equal(cleaned.length, 3);
+  assert.deepEqual(
+    cleaned[1].toolCalls?.map((call) => call.id),
+    ['a'],
+  );
+  assert.equal(cleaned[2].toolCallId, 'a');
+});
+
+test('history sanitizer leaves a complete exchange untouched', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const input = [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'x', name: 'shell', arguments: '{}' }] },
+    { role: 'tool', content: 'ok', toolCallId: 'x', name: 'shell' },
+    { role: 'assistant', content: 'done' },
+  ];
+  assert.deepEqual(sanitizeHistory(input), input);
+});
+
+test('history sanitizer drops an unanswered call with no text', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const cleaned = sanitizeHistory([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'z', name: 'shell', arguments: '{}' }] },
+  ]);
+  assert.equal(cleaned.length, 1);
+});

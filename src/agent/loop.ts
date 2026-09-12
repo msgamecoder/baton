@@ -59,6 +59,39 @@ export function describeToolCall(call: ToolCall): string {
   return detail ? `${call.name} ${String(detail).slice(0, 120)}` : call.name;
 }
 
+export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    if (!message) continue;
+
+    if (message.role === 'tool') {
+      const previous = out[out.length - 1];
+      const answers =
+        previous?.role === 'assistant' && (previous.toolCalls ?? []).some((call) => call.id === message.toolCallId);
+      if (!answers) continue;
+      out.push(message);
+      continue;
+    }
+
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      const answered = new Set(
+        messages
+          .slice(i + 1)
+          .filter((entry) => entry.role === 'tool')
+          .map((entry) => entry.toolCallId),
+      );
+      const kept = message.toolCalls.filter((call) => answered.has(call.id));
+      if (!kept.length && !message.content) continue;
+      out.push(kept.length ? { ...message, toolCalls: kept } : { role: 'assistant', content: message.content });
+      continue;
+    }
+
+    out.push(message);
+  }
+  return out;
+}
+
 export async function runTurn(
   messages: ChatMessage[],
   options: TurnOptions,
@@ -71,7 +104,7 @@ export async function runTurn(
   const maxTurns = options.maxTurns ?? 40;
   const events = options.events ?? {};
   const tools = options.tools === false ? [] : options.readOnly ? READ_ONLY_TOOLS : TOOLS;
-  const history = [...messages];
+  const history = sanitizeHistory(messages);
   const usage = { inputTokens: 0, outputTokens: 0 };
   let finalText = '';
   let turn = 0;

@@ -383,15 +383,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     status.content = '';
   };
 
-  const startThinking = (): void => {
-    stopThinking();
-    turnStarted = Date.now();
+  const pauseThinking = (): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    if (thinkingOn) status.content = 'waiting for your answer…';
+  };
+
+  const startThinking = (keepStart = false): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    if (!keepStart || !turnStarted) turnStarted = Date.now();
     if (!thinkingOn) return;
     const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
-    status.content = `${word}… 0.0s`;
-    thinkingTimer = setInterval(() => {
-      status.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s`;
-    }, 200);
+    const paint = (): void => {
+      status.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s   (esc to interrupt)`;
+    };
+    paint();
+    thinkingTimer = setInterval(paint, 200);
   };
 
   const setFooter = (extra?: string): void => {
@@ -870,21 +878,36 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     title = clip(question, 64);
     modalFooter = '↑/↓ move   ·   enter select   ·   esc skip';
     rows = [
-      ...options.slice(0, 4).map((option, i) => ({
-        kind: 'item' as const,
-        label: option,
-        detail: i === 0 ? 'Recommended' : '',
-        value: option,
-      })),
+      ...options.slice(0, 4).map((option, i) => {
+        const label = option.replace(/\s*\(recommended\)\s*$/i, '');
+        return {
+          kind: 'item' as const,
+          label,
+          detail: i === 0 ? 'Recommended' : '',
+          value: label,
+        };
+      }),
       { kind: 'blank', label: '' },
       { kind: 'item', label: 'Type something…', value: '__type' },
     ];
     index = 0;
     offset = 0;
     drawModal();
+    pauseThinking();
     return new Promise((resolve) => {
       askResolver = resolve;
     });
+  };
+
+  const cancelModal = (): void => {
+    const resolve = askResolver;
+    askResolver = null;
+    closeModal();
+    if (resolve) {
+      resolve('(skipped)');
+      startThinking(true);
+    }
+    input.focus();
   };
 
   const openMarkdown = (modalTitle: string, text: string): void => {
@@ -1022,6 +1045,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
       closeModal();
       resolve?.(String(row.value));
+      startThinking(true);
       input.focus();
       return;
     }
@@ -1412,10 +1436,6 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
       process.exit(0);
     }
-    if (key?.name === 'escape' && busy) {
-      session.abort();
-      return;
-    }
     if (key?.ctrl && key?.name === 'o') {
       if (!mode && !inputPurpose) openMenu();
       return;
@@ -1443,6 +1463,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         }
         return;
       }
+      if (key?.name === 'escape' && busy) {
+        session.abort();
+        return;
+      }
       if (key?.name === 'escape' && input.value) {
         input.value = '';
       }
@@ -1461,8 +1485,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     else if (key?.name === 'tab' || key?.name === 'return' || key?.name === 'enter') {
       paletteHandledAt = Date.now();
       accept();
-    } else if (key?.name === 'escape') closeModal();
-    else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
+    } else if (key?.name === 'escape') {
+      if (mode === 'question') cancelModal();
+      else closeModal();
+    } else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
       const row = rows[index];
       if (row?.value) {
         const id = String(row.value);
@@ -1486,6 +1512,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   input.on(InputRenderableEvents.ENTER, () => {
     if (Date.now() - paletteHandledAt < 120) return;
+    if (mode === 'question') {
+      accept();
+      return;
+    }
     const value = input.value;
     input.value = '';
 
