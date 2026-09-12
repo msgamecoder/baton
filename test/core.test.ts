@@ -76,3 +76,18 @@ test('log: append, inbox, cursor advance, broadcast, no self-delivery', () => {
 
   assert.equal(readMessages().length, 3);
 });
+
+test('provider session header follows the baton session, not the process', async () => {
+  const { providerHeaders, setProviderSession } = await import('../src/providers/client.ts');
+  const provider = {
+    id: 'opencode-go',
+    format: 'openai',
+    baseUrl: 'https://opencode.ai/zen/go/v1',
+    chatPath: '/chat/completions',
+    sessionHeader: 'x-opencode-session',
+  };
+  setProviderSession('20260912-120000');
+  assert.equal(providerHeaders(provider, 'k')['x-opencode-session'], '20260912-120000');
+  setProviderSession('20260912-121500');
+  assert.equal(providerHeaders(provider, 'k')['x-opencode-session'], '20260912-121500');
+});

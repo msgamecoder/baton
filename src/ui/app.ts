@@ -297,6 +297,9 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   scroll.horizontalScrollBar.visible = false;
   root.add(scroll);
 
+  const status = new TextRenderable(renderer, { id: 'status', content: '', fg: theme.dim, height: 1, flexShrink: 0 });
+  root.add(status);
+
   const inputBox = new BoxRenderable(renderer, {
     id: 'inputbox',
     border: true,
@@ -358,7 +361,6 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   let thinkingOn = true;
-  let thinkingNode: TextRenderable | null = null;
   let thinkingTimer: ReturnType<typeof setInterval> | null = null;
   let turnStarted = 0;
   let lastCopiedAt = 0;
@@ -378,10 +380,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const stopThinking = (): void => {
     if (thinkingTimer) clearInterval(thinkingTimer);
     thinkingTimer = null;
-    if (thinkingNode) {
-      thinkingNode.destroyRecursively();
-      thinkingNode = null;
-    }
+    status.content = '';
   };
 
   const startThinking = (): void => {
@@ -389,16 +388,9 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     turnStarted = Date.now();
     if (!thinkingOn) return;
     const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
-    thinkingNode = new TextRenderable(renderer, {
-      content: `${word}… 0.0s   (esc to interrupt)`,
-      fg: theme.dim,
-      height: 1,
-      flexShrink: 0,
-    });
-    addNode(thinkingNode);
+    status.content = `${word}… 0.0s`;
     thinkingTimer = setInterval(() => {
-      if (!thinkingNode) return;
-      thinkingNode.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s   (esc to interrupt)`;
+      status.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s`;
     }, 200);
   };
 
@@ -532,7 +524,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         ...(wrap ? { wrapMode: 'word' as const } : { height: 1, truncate: true }),
       });
 
-    const searchable = mode !== 'info' && mode !== 'question';
+    const searchable = ['command', 'model', 'provider', 'file'].includes(mode);
     dialog.add(row(searchable ? `Search   ${query}`.trimEnd() : ' ', theme.accent));
 
     if (body.length === 0) dialog.add(row('   nothing here', theme.dim));
@@ -1442,10 +1434,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           session.newSession();
           ui.clear();
           ui.line('that was your current session — started a new one', theme.user);
+          ui.setModel(session.model());
           setFooter();
-        } else {
-          ui.line(`deleted ${id}`, theme.dim);
+          closeModal();
+          input.focus();
+          return;
         }
+        ui.line(`deleted ${id}`, theme.dim);
         openSessions();
       }
     }

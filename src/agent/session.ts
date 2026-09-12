@@ -16,6 +16,7 @@ import { resolveKey, saveKey } from '../core/keys.ts';
 import { listModels } from '../providers/client.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { loadConfig } from '../core/config.ts';
+import { setProviderSession } from '../providers/client.ts';
 import { buildSystemPrompt, runTurn } from './loop.ts';
 import type { ChatMessage, ToolCall } from '../providers/types.ts';
 import {
@@ -496,6 +497,7 @@ export function createSession(options: SessionOptions): Session {
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
       sessionId = newSessionId();
+      setProviderSession(sessionId);
       title = '';
       createdAt = Date.now();
       usage = emptyUsage();
@@ -506,6 +508,7 @@ export function createSession(options: SessionOptions): Session {
       const record = readSessionRecord(id);
       if (!record) return false;
       sessionId = record.id;
+      setProviderSession(sessionId);
       title = record.title ?? '';
       createdAt = record.createdAt;
       usage = record.usage ?? emptyUsage();

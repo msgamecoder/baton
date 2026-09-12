@@ -3,6 +3,11 @@ import type { Provider } from '../providers/registry.ts';
 import type { ChatMessage, ToolCall, ToolSpec } from './types.ts';
 
 const CLIENT_SESSION_ID = randomUUID();
+let providerSessionId = CLIENT_SESSION_ID;
+
+export function setProviderSession(id: string): void {
+  providerSessionId = id || CLIENT_SESSION_ID;
+}
 
 export function providerHeaders(provider: Provider, apiKey?: string): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -12,7 +17,7 @@ export function providerHeaders(provider: Provider, apiKey?: string): Record<str
   } else if (apiKey) {
     headers.authorization = `Bearer ${apiKey}`;
   }
-  if (provider.sessionHeader) headers[provider.sessionHeader] = CLIENT_SESSION_ID;
+  if (provider.sessionHeader) headers[provider.sessionHeader] = providerSessionId;
   return headers;
 }
 
