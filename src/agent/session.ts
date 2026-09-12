@@ -74,6 +74,8 @@ export interface Session {
   model(): string;
   sessionId(): string;
   title(): string;
+  history(): ChatMessage[];
+  abort(): void;
   info(): SessionInfo;
   models(): Promise<string[]>;
   setModel(model: string): void;
@@ -160,6 +162,7 @@ export function createSession(options: SessionOptions): Session {
   let model = options.model;
   let apiKey = options.apiKey ?? resolveKey(provider);
   let autoApprove = options.autoApprove;
+  let turnAbort: AbortController | null = null;
   let agentMode: AgentMode = 'build';
 
   const system = (): ChatMessage => ({
@@ -439,6 +442,14 @@ export function createSession(options: SessionOptions): Session {
     model: () => model,
     sessionId: () => sessionId,
     title: () => title || sessionId,
+    history: () => messages.filter((message) => message.role !== 'system'),
+    abort: () => {
+      try {
+        turnAbort?.abort();
+      } catch {
+        /* nothing in flight */
+      }
+    },
     info: () => ({ id: sessionId, provider: provider.id, model, messages: messages.length - 1, usage }),
     models: fetchModels,
     setModel: (next: string) => {
@@ -560,6 +571,7 @@ export function createSession(options: SessionOptions): Session {
         }
       }
       const stream = ui.assistant();
+      turnAbort = new AbortController();
       try {
         const result = await runTurn(messages, {
           provider,
@@ -569,6 +581,7 @@ export function createSession(options: SessionOptions): Session {
           confirm: confirmTool,
           ask: ui.ask ? (question, choices) => ui.ask!(question, choices) : undefined,
           sessionId,
+          signal: turnAbort.signal,
           readOnly: agentMode === 'plan',
           events: {
             onText: (chunk) => stream.append(chunk),

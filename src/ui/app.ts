@@ -87,6 +87,7 @@ const COMMANDS: Command[] = [
   { group: 'session', label: 'build', detail: 'go back to build mode' },
   { group: 'session', label: 'new', detail: 'start a new session' },
   { group: 'session', label: 'sessions', detail: 'switch session' },
+  { group: 'session', label: 'resume', detail: 'reopen an old session and read it back' },
   { group: 'session', label: 'compact', detail: 'summarise the conversation to free context' },
   { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
   { group: 'session', label: 'clear', detail: 'forget this conversation' },
@@ -388,11 +389,16 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     turnStarted = Date.now();
     if (!thinkingOn) return;
     const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
-    thinkingNode = new TextRenderable(renderer, { content: `${word}… 0.0s`, fg: theme.dim, height: 1, flexShrink: 0 });
+    thinkingNode = new TextRenderable(renderer, {
+      content: `${word}… 0.0s   (esc to interrupt)`,
+      fg: theme.dim,
+      height: 1,
+      flexShrink: 0,
+    });
     addNode(thinkingNode);
     thinkingTimer = setInterval(() => {
       if (!thinkingNode) return;
-      thinkingNode.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s`;
+      thinkingNode.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s   (esc to interrupt)`;
     }, 200);
   };
 
@@ -526,7 +532,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         ...(wrap ? { wrapMode: 'word' as const } : { height: 1, truncate: true }),
       });
 
-    const searchable = mode !== 'info';
+    const searchable = mode !== 'info' && mode !== 'question';
     dialog.add(row(searchable ? `Search   ${query}`.trimEnd() : ' ', theme.accent));
 
     if (body.length === 0) dialog.add(row('   nothing here', theme.dim));
@@ -807,6 +813,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   const beginInput = (purpose: InputPurpose, boxTitle: string, placeholder: string): void => {
+    mode = null;
     inputPurpose = purpose;
     inputBox.title = ` ${boxTitle} `;
     input.placeholder = placeholder;
@@ -923,7 +930,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       if (command === 'provider') openProviders();
       else if (command === 'theme') openThemes();
       else if (command === 'model') void openModels();
-      else if (command === 'sessions') openSessions();
+      else if (command === 'sessions' || command === 'resume') openSessions();
       else if (command === 'export') openExport();
       else if (command === 'files') openFiles();
       else if (['key', 'remember', 'send'].includes(command)) input.value = `/${command} `;
@@ -1015,7 +1022,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (mode === 'sessions') {
       if (session.resume(row.value)) {
         ui.clear();
-        ui.line(`resumed ${row.value}`, theme.dim);
+        ui.line(`resumed ${session.title()}`, theme.dim);
+        for (const message of session.history()) {
+          const text = typeof message.content === 'string' ? message.content : '';
+          if (message.role === 'user') {
+            ui.user(text);
+          } else if (message.role === 'assistant' && text) {
+            const turn = ui.assistant();
+            turn.set(text);
+            turn.done();
+          }
+        }
         ui.setModel(session.model());
         setFooter();
       }
@@ -1364,6 +1381,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         /* already gone */
       }
       process.exit(0);
+    }
+    if (key?.name === 'escape' && busy) {
+      session.abort();
+      return;
     }
     if (key?.ctrl && key?.name === 'o') {
       if (!mode && !inputPurpose) openMenu();
