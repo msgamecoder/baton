@@ -25,6 +25,7 @@ import { formatTaskList } from '../agent/tasks.ts';
 import { runUpdate, type Session } from '../agent/session.ts';
 import { ensurePanes } from '../core/launcher.ts';
 import { formatTokens, totalTokens } from '../agent/history.ts';
+import { readRelayInbox } from '../agent/relay.ts';
 
 interface Theme {
   bg: string;
@@ -262,6 +263,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   } catch {
     /* title is best effort */
   }
+  const assertTitle = (): void => {
+    try {
+      process.stdout.write('\u001b]0;baton\u0007');
+    } catch {
+      /* ignore */
+    }
+  };
+  setTimeout(assertTitle, 1000).unref?.();
 
   const root = new BoxRenderable(renderer, {
     id: 'root',
@@ -1481,6 +1490,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (!value.trim()) return;
     closeModal();
     startThinking();
+    busy = true;
     void dispatch(value)
       .then(async () => {
         if (session.mode() === 'plan' && !inputPurpose) {
@@ -1503,6 +1513,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         const elapsed = turnStarted ? (Date.now() - turnStarted) / 1000 : 0;
         stopThinking();
         if (thinkingOn && elapsed > 0.4) ui.line(`· ${elapsed.toFixed(1)}s`, theme.dim);
+        busy = false;
+        assertTitle();
         setFooter();
         input.focus();
       });
@@ -1533,6 +1545,69 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
   renderer.on('selection' as never, onSelection);
   renderer.on('selectionChanged' as never, onSelection);
+
+  let busy = false;
+  let autoTurns = 0;
+  const AUTO_TURN_LIMIT = 6;
+
+  const pollRelay = async (): Promise<void> => {
+    if (busy || mode || inputPurpose) return;
+    let messages: Awaited<ReturnType<typeof readRelayInbox>> = [];
+    try {
+      messages = await readRelayInbox(options.agent);
+    } catch {
+      return;
+    }
+    if (messages.length === 0) return;
+
+    for (const message of messages) {
+      ui.line(`⇄ ${message.from} → ${message.to}   [${message.type}]   ${message.summary}`, theme.accent);
+      for (const step of message.next ?? []) ui.line(`     · ${step}`, theme.dim);
+      if (message.built?.length) ui.line(`     files: ${message.built.map((entry) => entry.path).join(', ')}`, theme.dim);
+    }
+    setFooter();
+
+    const handoff = messages.find(
+      (message) => message.type === 'handoff' && message.to === options.agent && message.from !== options.agent,
+    );
+    if (!handoff) return;
+
+    const config = loadConfig();
+    const hop = handoff.hop ?? 0;
+    if (config.autoContinue === false) return;
+    if (hop >= config.maxHop) {
+      ui.line(`hop cap reached (${hop}) — stopping the relay here`, theme.error);
+      return;
+    }
+    if (autoTurns >= AUTO_TURN_LIMIT) {
+      ui.line('auto-continue limit reached — press enter to keep going', theme.error);
+      return;
+    }
+
+    autoTurns += 1;
+    const instruction = [
+      `${handoff.from} handed work to you over the relay.`,
+      handoff.summary,
+      ...(handoff.next?.length ? [`Next steps: ${handoff.next.join('; ')}`] : []),
+      ...(handoff.built?.length ? [`Files built: ${handoff.built.map((entry) => entry.path).join(', ')}`] : []),
+      `Do it now. When you finish, hand back with: baton send --from ${options.agent} --to ${handoff.from} --hop ${hop + 1} --summary "..."`,
+    ].join('\n');
+
+    ui.line(`auto-continuing from ${handoff.from}…`, theme.tool);
+    busy = true;
+    try {
+      await session.handle(instruction, ui);
+    } catch (error) {
+      ui.line(`auto-continue failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+    } finally {
+      busy = false;
+      setFooter();
+      input.focus();
+    }
+  };
+
+  const relayTimer = setInterval(() => void pollRelay(), 4000);
+  relayTimer.unref?.();
 
   const TIPS = [
     'right-click (or ctrl+o) opens a menu: copy, or open the other agent',
