@@ -18,6 +18,7 @@ const { tmuxBin, detectSplitters, userTmuxPath } = await import('../src/core/spl
 const registry = await import('../src/providers/registry.ts');
 const { parseKeys } = await import('../src/ui/select.ts');
 const { READ_ONLY_TOOLS, TOOLS } = await import('../src/agent/tools.ts');
+const memory = await import('../src/core/memory.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -129,6 +130,34 @@ test('plan mode exposes only read-only tools', () => {
     assert.ok(readOnly.includes(allowed), `${allowed} should be available in plan mode`);
   }
   assert.ok(TOOLS.length > READ_ONLY_TOOLS.length);
+});
+
+test('the agent gets task and ask tools, in both modes', () => {
+  const names = TOOLS.map((tool) => tool.name);
+  for (const tool of ['task_create', 'task_update', 'task_list', 'ask_user']) {
+    assert.ok(names.includes(tool), `${tool} missing`);
+  }
+  const readOnly = READ_ONLY_TOOLS.map((tool) => tool.name);
+  assert.ok(readOnly.includes('task_create'), 'planning should be able to make tasks');
+  assert.ok(readOnly.includes('task_list'));
+});
+
+test('memory extracts and dedupes facts', () => {
+  assert.deepEqual(memory.extractFacts('save my name is mxgamecoder to memory'), ['name: mxgamecoder']);
+  assert.deepEqual(memory.extractFacts('my editor is neovim'), ['editor: neovim']);
+  assert.deepEqual(memory.extractFacts('remember I prefer tabs'), ['preference: tabs']);
+  assert.doesNotMatch(memory.extractFacts('what does this file do')[0] ?? '', /preference|name:/);
+
+  const first = memory.rememberFact('name: mxgamecoder');
+  const again = memory.rememberFact('name: mxgamecoder');
+  assert.ok(first);
+  assert.equal(again, null, 'the same fact must not be stored twice');
+});
+
+test('memory instructions are recognised', () => {
+  assert.equal(memory.isMemoryInstruction('save my name is bob to memory'), true);
+  assert.equal(memory.isMemoryInstruction("don't forget I use pnpm"), true);
+  assert.equal(memory.isMemoryInstruction('build the login page'), false);
 });
 
 test('provider registry: grouped, ordered, complete', () => {

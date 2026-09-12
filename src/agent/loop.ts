@@ -19,6 +19,7 @@ export interface TurnOptions {
   tools?: boolean;
   confirm?: ToolContext['confirm'];
   ask?: ToolContext['ask'];
+  sessionId?: string;
   readOnly?: boolean;
   maxTurns?: number;
   maxTokens?: number;
@@ -33,6 +34,9 @@ export function buildSystemPrompt(cwd: string, extra?: string): string {
     'Use the tools to read and change files and to run commands. Prefer editing over rewriting whole files.',
     'Be concise. When you finish a piece of work, say what changed in one or two lines.',
     'If the user asks you to test something, actually run it and report the real output.',
+    'Be economical with tokens — they cost the user money. Never paste a whole file when a targeted edit will do, do not re-read a file you have already read, do not repeat the plan back, and keep answers short.',
+    'For multi-step work, create tasks with task_create and keep them updated as you go.',
+    'If you are unsure between options, use ask_user instead of guessing.',
   ];
   if (extra) parts.push('', extra);
   return parts.join('\n');
@@ -106,6 +110,7 @@ export async function runTurn(
       }
       const outcome = await runTool(call.name, args, {
         cwd: options.cwd,
+        sessionId: options.sessionId,
         confirm: options.confirm,
         ask: options.ask,
       });

@@ -2,9 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import type { ToolSpec, ToolResult } from '../providers/types.ts';
+import { createTask, tasksSummary, updateTask, type TaskStatus } from './tasks.ts';
 
 export interface ToolContext {
   cwd: string;
+  sessionId?: string;
   confirm?: (name: string, args: Record<string, unknown>) => Promise<boolean>;
   ask?: (question: string, options: string[]) => Promise<string>;
 }
@@ -71,6 +73,39 @@ export const TOOLS: ToolSpec[] = [
       },
       required: ['pattern'],
     },
+  },
+  {
+    name: 'task_create',
+    description:
+      'Create a task to track work on a bigger job, then keep it updated as you go. Create them before starting, mark one in_progress at a time, and complete each as you finish.',
+    parameters: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'short imperative title, e.g. "Add the health endpoint"' },
+        description: { type: 'string', description: 'what done looks like' },
+        activeForm: { type: 'string', description: 'present continuous label, e.g. "Adding the health endpoint"' },
+      },
+      required: ['subject', 'description'],
+    },
+  },
+  {
+    name: 'task_update',
+    description: 'Update a task: set status pending/in_progress/completed, or edit its text. Exactly one task should be in_progress at a time.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'task id, e.g. t1' },
+        status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+        subject: { type: 'string' },
+        description: { type: 'string' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'task_list',
+    description: 'List the current tasks with their status.',
+    parameters: { type: 'object', properties: {} },
   },
   {
     name: 'ask_user',
@@ -243,6 +278,32 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         }
         return { output: hits.length ? truncate(hits.join('\n')) : 'no matches' };
       }
+      case 'task_create': {
+        if (!ctx.sessionId) return { output: 'tasks are not available here', isError: true };
+        const task = createTask(
+          ctx.sessionId,
+          String(args.subject ?? 'task'),
+          String(args.description ?? ''),
+          args.activeForm ? String(args.activeForm) : undefined,
+        );
+        return { output: `created ${task.id}: ${task.subject}` };
+      }
+      case 'task_update': {
+        if (!ctx.sessionId) return { output: 'tasks are not available here', isError: true };
+        const id = String(args.id ?? '');
+        const status = ['pending', 'in_progress', 'completed'].includes(String(args.status))
+          ? (String(args.status) as TaskStatus)
+          : undefined;
+        const task = updateTask(ctx.sessionId, id, {
+          status,
+          subject: args.subject ? String(args.subject) : undefined,
+          description: args.description ? String(args.description) : undefined,
+        });
+        if (!task) return { output: `no task ${id}`, isError: true };
+        return { output: `${task.id} → ${task.status}: ${task.subject}` };
+      }
+      case 'task_list':
+        return { output: ctx.sessionId ? tasksSummary(ctx.sessionId) : 'tasks are not available here' };
       case 'ask_user': {
         const question = String(args.question ?? '');
         const options = Array.isArray(args.options) ? (args.options as string[]).slice(0, 4) : [];

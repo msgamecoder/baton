@@ -173,7 +173,9 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
       max_tokens: maxTokens ?? 4096,
       stream: true,
       messages: toAnthropicMessages(messages),
-      ...(system ? { system } : {}),
+      ...(system
+        ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] }
+        : {}),
       ...(tools.length ? { tools: toAnthropicTools(tools) } : {}),
     };
   } else {

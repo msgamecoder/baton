@@ -59,3 +59,69 @@ export function memoryBlock(limit = 50): string {
   if (entries.length === 0) return '';
   return ['', '## Baton memory (keep these — do not lose them)', ...entries.map((e) => `- ${e.text}`), ''].join('\n');
 }
+
+export function memoryLines(): string[] {
+  const entries = allMemory();
+  if (entries.length === 0) return ['(no memory yet)'];
+  return entries.map((entry) => entry.text);
+}
+
+export function isMemoryInstruction(text: string): boolean {
+  return (
+    /^\s*\/?(?:please\s+)?(?:save|remember|keep|note|store)\b/i.test(text) ||
+    /^\s*don'?t forget\b/i.test(text)
+  );
+}
+
+export function rememberFact(fact: string, source?: string): MemoryEntry | null {
+  const trimmed = fact.trim();
+  if (!trimmed) return null;
+  const needle = trimmed.toLowerCase();
+  const existing = allMemory().find((entry) => entry.text.trim().toLowerCase() === needle);
+  if (existing) return null;
+  return remember(trimmed, source);
+}
+
+export function extractFacts(text: string): string[] {
+  const raw = text.trim();
+  if (!raw) return [];
+  const clean = raw.replace(/[.!]+$/, '');
+  const facts: string[] = [];
+
+  const stripTail = (value: string): string =>
+    value
+      .replace(/\s+(?:to|in|into)\s+(?:your\s+|the\s+)?(?:memory|mind)\b.*$/i, '')
+      .replace(/\s+(?:please|thanks|ok)\b.*$/i, '')
+      .replace(/[.,;!]+$/, '')
+      .trim();
+
+  const name = clean.match(/\b(?:my name is|call me|i am|i'm)\s+([^,.;\n]{1,40})/i);
+  if (name) {
+    const value = stripTail(name[1]);
+    if (value) facts.push(`name: ${value}`);
+  }
+
+  for (const match of clean.matchAll(/\bmy ([\w ]{2,20}?) is\s+([^.,;\n]{1,60})/gi)) {
+    const field = match[1].trim().toLowerCase();
+    if (field === 'name') continue;
+    const value = stripTail(match[2]);
+    if (value) facts.push(`${field}: ${value}`);
+  }
+
+  const preference = clean.match(/\bi (?:prefer|like|love|use|always use|hate|dislike)\s+([^.,;\n]{1,60})/i);
+  if (preference) {
+    const value = stripTail(preference[1]);
+    if (value) facts.push(`preference: ${value}`);
+  }
+
+  if (facts.length === 0 && isMemoryInstruction(raw)) {
+    const stripped = clean
+      .replace(/^(?:please\s+)?(?:save|remember|keep|note|store)\b/i, '')
+      .replace(/\b(?:to|in)\s+(?:your\s+)?(?:memory|mind)\b/i, '')
+      .replace(/^(?:that\s+)/i, '')
+      .trim();
+    if (stripped.length > 1) facts.push(stripped);
+  }
+
+  return [...new Set(facts)];
+}

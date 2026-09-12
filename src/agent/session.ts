@@ -2,7 +2,14 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
-import { memoryBlock, remember } from '../core/memory.ts';
+import {
+  extractFacts,
+  isMemoryInstruction,
+  memoryBlock,
+  remember,
+  rememberFact,
+  type MemoryEntry,
+} from '../core/memory.ts';
 import { protocolText } from '../core/instructions.ts';
 import { getProvider, type Provider } from '../providers/registry.ts';
 import { resolveKey, saveKey } from '../core/keys.ts';
@@ -126,6 +133,16 @@ function writeExport(record: SessionRecord, format: ExportFormat, name: string):
     format === 'json' ? `${JSON.stringify(record, null, 2)}\n` : format === 'md' ? toMarkdown(record) : toHtml(record);
   writeFileSync(file, content);
   return file;
+}
+
+function trimHistory(messages: ChatMessage[], keep = 16): ChatMessage[] {
+  if (messages.length <= keep + 8) return messages;
+  const cutoff = messages.length - keep;
+  return messages.map((message, index) => {
+    if (index === 0 || index >= cutoff) return message;
+    if (message.role !== 'tool' || message.content.length <= 400) return message;
+    return { ...message, content: `${message.content.slice(0, 200)}\n[earlier tool output trimmed to save tokens]` };
+  });
 }
 
 export function createSession(options: SessionOptions): Session {
@@ -383,8 +400,23 @@ export function createSession(options: SessionOptions): Session {
         return;
       }
 
+      const facts = extractFacts(trimmed);
+      if (facts.length > 0) {
+        const saved = facts
+          .map((fact) => rememberFact(fact, options.agent))
+          .filter((entry): entry is MemoryEntry => Boolean(entry));
+        if (saved.length > 0) {
+          ui.line(`remembered: ${saved.map((entry) => entry.text).join('   ·   ')}`, '#7fd1b9');
+        }
+        if (isMemoryInstruction(trimmed) && saved.length > 0) {
+          persist();
+          return;
+        }
+      }
+
       ui.user(trimmed);
       messages.push({ role: 'user', content: trimmed });
+      messages = trimHistory(messages);
       const stream = ui.assistant();
       try {
         const result = await runTurn(messages, {
@@ -394,6 +426,7 @@ export function createSession(options: SessionOptions): Session {
           cwd: options.cwd,
           confirm: confirmTool,
           ask: ui.ask ? (question, choices) => ui.ask!(question, choices) : undefined,
+          sessionId,
           readOnly: agentMode === 'plan',
           events: {
             onText: (chunk) => stream.append(chunk),

@@ -20,7 +20,8 @@ import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
 import { loadConfig, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
-import { memoryBlock } from '../core/memory.ts';
+import { memoryBlock, memoryLines } from '../core/memory.ts';
+import { formatTaskList } from '../agent/tasks.ts';
 import { runUpdate, type Session } from '../agent/session.ts';
 import { formatTokens, totalTokens } from '../agent/history.ts';
 
@@ -103,6 +104,8 @@ const COMMANDS: Command[] = [
   { group: 'baton', label: 'debug', detail: 'paths, versions, config' },
   { group: 'baton', label: 'update', detail: 'update baton and restart' },
   { group: 'baton', label: 'yes', detail: 'toggle auto-approve for tools' },
+  { group: 'baton', label: 'memory', detail: 'what baton remembers about you' },
+  { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
   { group: 'baton', label: 'context', detail: 'protocol and memory' },
   { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
 
@@ -340,9 +343,11 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   const setFooter = (extra?: string): void => {
     const info = session.info();
+    const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
+    const money = price ? `  ·  $${cost(price, info.usage.inputTokens, info.usage.outputTokens).toFixed(4)}` : '';
     footer.content = `${options.agent}  ·  ${session.mode().toUpperCase()}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
       totalTokens(info.usage),
-    )} tokens${extra ? `  ·  ${extra}` : ''}`;
+    )} tokens${money}${extra ? `  ·  ${extra}` : ''}`;
   };
 
   const ui: ChatUi = {
@@ -970,6 +975,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (name === 'context') {
       return openInfo('Context', [...protocolText().split('\n'), ...memoryBlock().split('\n')].slice(0, 30));
     }
+    if (name === 'memory') return openInfo('Memory', memoryLines());
+    if (name === 'tasks') return openInfo('Tasks', formatTaskList(session.info().id));
     if (name === 'plan') {
       session.setMode('plan');
       setFooter();
