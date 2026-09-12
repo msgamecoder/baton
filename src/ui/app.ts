@@ -17,7 +17,7 @@ import {
 import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
 import { protocolText } from '../core/instructions.ts';
 import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
-import { loadConfig } from '../core/config.ts';
+import { loadConfig, saveConfig } from '../core/config.ts';
 import { allProviders } from '../providers/registry.ts';
 import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { memoryBlock } from '../core/memory.ts';
@@ -144,7 +144,16 @@ interface Row {
   checked?: boolean;
 }
 
-type Mode = 'command' | 'provider' | 'theme' | 'model' | 'sessions' | 'export' | 'file' | 'info' | 'keyinput';
+type Mode =
+  | 'command'
+  | 'provider'
+  | 'theme'
+  | 'model'
+  | 'sessions'
+  | 'export'
+  | 'file'
+  | 'info'
+  | 'custom-format';
 
 function visibleLength(text: string): number {
   return text.replace(/\u001b\[[0-9;]*m/g, '').length;
@@ -307,6 +316,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     id: 'dialog',
     width: '76%',
     flexDirection: 'column',
+    flexShrink: 0,
     border: true,
     borderColor: theme.accent,
     backgroundColor: theme.panel,
@@ -404,6 +414,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   let paletteHandledAt = 0;
   const WINDOW = 12;
 
+  type InputPurpose = 'key' | 'custom-name' | 'custom-url' | 'custom-key';
+  let inputPurpose: InputPurpose | null = null;
+  const draft = { id: '', name: '', baseUrl: '', format: 'openai' as 'openai' | 'anthropic' };
+
   const closeModal = (): void => {
     mode = null;
     rows = [];
@@ -423,44 +437,35 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       Math.max(12, ...body.filter((row) => row.kind === 'item').map((row) => visibleLength(row.label))),
     );
 
-    const searchable = mode !== 'info';
-    const lines: string[] = [];
-    if (searchable) lines.push(`Search   ${query}`.trimEnd());
-    else lines.push(' ');
-    dialog.add(new TextRenderable(renderer, { content: lines[0], fg: theme.accent }));
+    const row = (content: string, fg: string): TextRenderable =>
+      new TextRenderable(renderer, { content, fg, height: 1, flexShrink: 0, truncate: true });
 
-    if (body.length === 0) {
-      dialog.add(new TextRenderable(renderer, { content: '   nothing here', fg: theme.dim }));
-    }
+    const searchable = mode !== 'info';
+    dialog.add(row(searchable ? `Search   ${query}`.trimEnd() : ' ', theme.accent));
+
+    if (body.length === 0) dialog.add(row('   nothing here', theme.dim));
 
     for (let i = 0; i < body.length; i++) {
-      const row = body[i];
+      const entry = body[i];
       const realIndex = offset + i;
-      if (row.kind === 'blank') {
-        dialog.add(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+      if (entry.kind === 'blank') {
+        dialog.add(row('', theme.dim));
         continue;
       }
-      if (row.kind === 'header') {
-        dialog.add(new TextRenderable(renderer, { content: `   ${row.label}`, fg: theme.accent }));
+      if (entry.kind === 'header') {
+        dialog.add(row(`   ${entry.label}`, theme.accent));
         continue;
       }
       const selected = realIndex === index && mode !== 'info';
       const marker = selected ? '❯' : ' ';
-      const check = row.checked ? '✓' : ' ';
-      const label = clip(row.label, labelWidth);
-      const detail = row.detail ? `  ${clip(row.detail, 60)}` : '';
-      dialog.add(
-        new TextRenderable(renderer, {
-          content: `${marker} ${check}  ${pad(label, labelWidth)}${detail}`,
-          fg: selected ? theme.pick : theme.text,
-          truncate: true,
-        }),
-      );
+      const check = entry.checked ? '✓' : ' ';
+      const label = clip(entry.label, labelWidth);
+      const detail = entry.detail ? `  ${clip(entry.detail, 60)}` : '';
+      dialog.add(row(`${marker} ${check}  ${pad(label, labelWidth)}${detail}`, selected ? theme.pick : theme.text));
     }
 
-    dialog.add(new TextRenderable(renderer, { content: '', fg: theme.dim }));
-    dialog.add(new TextRenderable(renderer, { content: modalFooter, fg: theme.dim, truncate: true }));
-    dialog.height = body.length + (searchable ? 5 : 4);
+    dialog.add(row('', theme.dim));
+    dialog.add(row(modalFooter, theme.dim));
     overlay.visible = true;
   };
 
@@ -537,18 +542,18 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
     if (connected.filter(matches).length) {
       out.push({ kind: 'header', label: 'Connected' });
-      for (const provider of connected) if (matches(provider)) out.push(item(provider.id, provider.name, 'key set', true));
+      for (const provider of connected) if (matches(provider)) out.push(item(provider.id, provider.name, '', true));
       out.push({ kind: 'blank', label: '' });
     }
     if (popular.filter(matches).length) {
       out.push({ kind: 'header', label: 'Popular' });
-      for (const provider of popular) if (matches(provider)) out.push(item(provider.id, provider.name, BLURBS[provider.id] ?? provider.format, false));
+      for (const provider of popular) if (matches(provider)) out.push(item(provider.id, provider.name, '', false));
       out.push({ kind: 'blank', label: '' });
     }
     const restMatches = rest.filter(matches);
     if (restMatches.length) {
       out.push({ kind: 'header', label: 'Providers' });
-      for (const provider of restMatches) out.push(item(provider.id, provider.name, BLURBS[provider.id] ?? '', false));
+      for (const provider of restMatches) out.push(item(provider.id, provider.name, '', false));
     }
     if (out.length === 0) out.push({ kind: 'item', label: 'no provider matches', value: '' });
 
@@ -695,6 +700,54 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     ui.line(`theme → ${name}`, theme.dim);
   };
 
+  const beginInput = (purpose: InputPurpose, boxTitle: string, placeholder: string): void => {
+    inputPurpose = purpose;
+    inputBox.title = ` ${boxTitle} `;
+    input.placeholder = placeholder;
+    input.value = '';
+    input.focus();
+  };
+
+  const endInput = (): void => {
+    inputPurpose = null;
+    inputBox.title = ' message ';
+    input.placeholder = 'Ask anything…    /  commands    @  files';
+    input.value = '';
+    input.focus();
+  };
+
+  const openCustomFormat = (): void => {
+    mode = 'custom-format';
+    title = 'Custom provider — format';
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
+    rows = [
+      { kind: 'item', label: 'openai', detail: 'chat completions', value: 'openai' },
+      { kind: 'item', label: 'anthropic', detail: 'messages', value: 'anthropic' },
+    ];
+    index = 0;
+    offset = 0;
+    drawModal();
+  };
+
+  const finishCustom = (key: string): void => {
+    const id =
+      (draft.name || 'custom')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || `custom-${Date.now().toString(36)}`;
+    const config = loadConfig();
+    config.customProviders = [
+      ...(config.customProviders ?? []).filter((entry) => entry.id !== id),
+      { id, name: draft.name || 'Custom', format: draft.format, baseUrl: draft.baseUrl },
+    ];
+    saveConfig(config);
+    if (key) saveKey(id, key);
+    session.setProvider(id);
+    ui.line(`connected ${draft.name || id} → ${draft.baseUrl}`, theme.user);
+    endInput();
+    void openModels();
+  };
+
   const accept = (): void => {
     const row = rows[index];
     if (!row || row.kind !== 'item' || !row.value) return;
@@ -717,20 +770,33 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
     if (mode === 'provider') {
       const id = row.value;
-      pendingProvider = id;
       const provider = allProviders(loadConfig().customProviders).find((entry) => entry.id === id);
-      if (provider && provider.needsKey && !resolveKey(provider)) {
+      if (!provider) return;
+      if (provider.id === 'custom') {
         closeModal();
-        mode = 'keyinput';
-        input.placeholder = `paste your ${provider.name} API key, then enter`;
-        input.value = '';
-        input.focus();
+        draft.name = '';
+        draft.baseUrl = '';
+        draft.format = 'openai';
+        beginInput('custom-name', 'custom provider — name', 'e.g. My Gateway');
+        return;
+      }
+      if (provider.needsKey && !resolveKey(provider)) {
+        closeModal();
+        pendingProvider = id;
+        beginInput('key', `api key — ${provider.name}`, 'enter confirm   ·   esc cancel');
         return;
       }
       session.setProvider(id);
-      ui.line(`provider → ${provider?.name ?? id}`, theme.dim);
+      ui.line(`provider → ${provider.name}`, theme.user);
       closeModal();
-      input.focus();
+      void openModels();
+      return;
+    }
+
+    if (mode === 'custom-format') {
+      draft.format = row.value === 'anthropic' ? 'anthropic' : 'openai';
+      closeModal();
+      beginInput('custom-key', `api key — ${draft.name}`, 'enter confirm   ·   esc cancel');
       return;
     }
 
@@ -910,7 +976,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   input.on(InputRenderableEvents.INPUT, () => {
     const value = input.value;
-    if (mode === 'keyinput') return;
+    if (inputPurpose) return;
     if (mode === 'model' || mode === 'sessions' || mode === 'file' || mode === 'provider' || mode === 'command') {
       if (mode === 'provider' || mode === 'command') {
         query = value.startsWith('/') ? value.slice(1) : value;
@@ -983,6 +1049,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
 
     if (!mode) {
+      if (inputPurpose) {
+        if (key?.name === 'escape') {
+          pendingProvider = '';
+          endInput();
+          ui.line('cancelled', theme.dim);
+        }
+        return;
+      }
       if (key?.name === 'escape' && input.value) {
         input.value = '';
       }
@@ -994,7 +1068,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       return;
     }
 
-    if (mode === 'keyinput') return;
+    if (inputPurpose) return;
 
     if (key?.name === 'up') move(-1);
     else if (key?.name === 'down') move(1);
@@ -1017,19 +1091,41 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     const value = input.value;
     input.value = '';
 
-    if (mode === 'keyinput' && pendingProvider) {
-      const key = value.trim();
-      if (key) {
-        saveKey(pendingProvider, key);
-        session.setProvider(pendingProvider);
-        const provider = allProviders(loadConfig().customProviders).find((entry) => entry.id === pendingProvider);
-        ui.line(`connected ${provider?.name ?? pendingProvider}`, theme.user);
+    if (inputPurpose) {
+      const answer = value.trim();
+      const purpose = inputPurpose;
+      if (purpose === 'key' && pendingProvider) {
+        if (answer) {
+          saveKey(pendingProvider, answer);
+          session.setProvider(pendingProvider);
+          const provider = allProviders(loadConfig().customProviders).find((entry) => entry.id === pendingProvider);
+          ui.line(`connected ${provider?.name ?? pendingProvider}`, theme.user);
+        }
+        pendingProvider = '';
+        endInput();
+        if (answer) void openModels();
+        return;
       }
-      pendingProvider = '';
-      mode = null;
-      input.placeholder = 'Ask anything…    /  commands    @  files';
-      setFooter();
-      input.focus();
+      if (purpose === 'custom-name') {
+        draft.name = answer || 'Custom';
+        beginInput('custom-url', `custom provider — ${draft.name} base url`, 'e.g. https://api.example.com/v1');
+        return;
+      }
+      if (purpose === 'custom-url') {
+        if (!answer) {
+          ui.line('a base URL is required', theme.error);
+          return;
+        }
+        draft.baseUrl = answer;
+        endInput();
+        openCustomFormat();
+        return;
+      }
+      if (purpose === 'custom-key') {
+        finishCustom(answer);
+        return;
+      }
+      endInput();
       return;
     }
 
