@@ -28,7 +28,7 @@ import { daemonUp, remoteAck, remoteInbox, remoteSend } from '../core/client.ts'
 import {
   buildHeadlessCommand,
   buildUpPlan,
-  commandExists,
+  missingAgentCommands,
   runningAgents,
   spawnBackground,
   stopAgents,
@@ -457,7 +457,7 @@ async function cmdUp(flags: Flags): Promise<void> {
     }
   }
 
-  const missing = config.agents.filter((a) => !commandExists(a.command));
+  const missing = missingAgentCommands(config.agents);
   if (missing.length > 0) {
     console.log(`warning: not on PATH — ${missing.map((a) => `${a.name} (${a.command})`).join(', ')}`);
   }

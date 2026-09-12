@@ -22,17 +22,25 @@ export interface StartedAgent {
 
 const PIDS_PATH = join(AGENTS_DIR, 'pids.json');
 
-function batonAgentCommand(agent: AgentConfig): string {
+function batonAgentArgs(agent: AgentConfig): string[] {
   const args = ['chat', '--agent', agent.name];
   if (agent.provider) args.push('--provider', agent.provider);
   if (agent.model) args.push('--model', agent.model);
-  return `${process.execPath} ${process.argv[1]} ${args.join(' ')}`;
+  return args;
+}
+
+function batonAgentCommand(agent: AgentConfig): string {
+  return `${process.execPath} ${process.argv[1]} ${batonAgentArgs(agent).join(' ')}`;
+}
+
+function externalAgentCommand(agent: AgentConfig): string {
+  const model = agent.model ? ` ${agent.modelFlag ?? '--model'} ${agent.model}` : '';
+  return `${agent.command}${model}`;
 }
 
 function paneCommand(agent: AgentConfig): string {
   if (!agent.command) return `BATON_AGENT=${agent.name} ${batonAgentCommand(agent)}`;
-  const model = agent.model ? ` ${agent.modelFlag ?? '--model'} ${agent.model}` : '';
-  return `BATON_AGENT=${agent.name} ${agent.command}${model}`;
+  return `BATON_AGENT=${agent.name} ${externalAgentCommand(agent)}`;
 }
 
 export function buildHeadlessCommand(
@@ -102,12 +110,17 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
   };
 }
 
-export function commandExists(command: string): boolean {
+export function commandExists(command?: string): boolean {
+  if (!command) return false;
   const bin = command.trim().split(/\s+/)[0];
   if (!bin) return false;
   const probe = platform() === 'win32' ? 'where' : 'which';
   const result = spawnSync(probe, [bin], { stdio: 'ignore' });
   return !result.error && result.status === 0;
+}
+
+export function missingAgentCommands(agents: AgentConfig[]): AgentConfig[] {
+  return agents.filter((agent) => Boolean(agent.command) && !commandExists(agent.command));
 }
 
 function isAlive(pid: number): boolean {
@@ -146,12 +159,19 @@ export function spawnBackground(config: BatonConfig): StartedAgent[] {
     const log = join(AGENTS_DIR, `${agent.name}.log`);
     writeFileSync(log, '');
     const fd = openSync(log, 'a');
-    const child = spawn(agent.command, [], {
-      detached: true,
-      stdio: ['ignore', fd, fd],
-      shell: true,
-      env: { ...process.env, BATON_AGENT: agent.name, ...(agent.env ?? {}) },
-    });
+    const env = { ...process.env, BATON_AGENT: agent.name, ...(agent.env ?? {}) };
+    const child = agent.command
+      ? spawn(externalAgentCommand(agent), [], {
+          detached: true,
+          stdio: ['ignore', fd, fd],
+          shell: true,
+          env,
+        })
+      : spawn(process.execPath, [process.argv[1] as string, ...batonAgentArgs(agent)], {
+          detached: true,
+          stdio: ['ignore', fd, fd],
+          env,
+        });
     child.unref();
     closeSync(fd);
     started.push({ name: agent.name, pid: child.pid, log });

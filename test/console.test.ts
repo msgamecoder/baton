@@ -9,7 +9,7 @@ process.env.BATON_HOME = HOME;
 writeFileSync(join(HOME, 'note.txt'), 'x');
 
 const { parseSlash, slashHelp, directiveHelp } = await import('../src/core/console.ts');
-const { buildUpPlan, buildHeadlessCommand, commandExists, runningAgents } = await import(
+const { buildUpPlan, buildHeadlessCommand, commandExists, runningAgents, missingAgentCommands } = await import(
   '../src/core/launcher.ts'
 );
 const { validateMessage, MESSAGE_TYPES } = await import('../src/core/schema.ts');
@@ -78,6 +78,14 @@ test('commandExists detects real and missing binaries', () => {
   assert.equal(commandExists('node'), true);
   assert.equal(commandExists('node --version'), true);
   assert.equal(commandExists('definitely-not-a-real-binary-xyz'), false);
+  assert.equal(commandExists(undefined), false);
+  assert.equal(commandExists(''), false);
+});
+
+test('an agent with no command is Baton itself, not a missing binary', () => {
+  assert.deepEqual(missingAgentCommands([{ name: 'left' }, { name: 'right' }]), []);
+  assert.equal(missingAgentCommands([{ name: 'x', command: 'nope-xyz-123' }]).length, 1);
+  assert.equal(missingAgentCommands([{ name: 'y', command: 'node' }]).length, 0);
 });
 
 test('runningAgents is empty with no pid file', () => {
