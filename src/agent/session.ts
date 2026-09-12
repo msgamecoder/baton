@@ -621,7 +621,7 @@ export function runUpdate(): { ok: boolean; output: string } {
     }
   })();
 
-  const repo = 'github:mxgamecoder/baton';
+  const repo = 'github:msgamecoder/baton';
 
   const fromGithub = spawnSync('npm', ['install', '-g', repo, '--no-fund', '--no-audit'], { encoding: 'utf8' });
   if (fromGithub.status === 0) {

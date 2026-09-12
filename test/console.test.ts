@@ -144,13 +144,13 @@ test('the agent gets task and ask tools, in both modes', () => {
 });
 
 test('memory extracts and dedupes facts', () => {
-  assert.deepEqual(memory.extractFacts('save my name is mxgamecoder to memory'), ['name: mxgamecoder']);
+  assert.deepEqual(memory.extractFacts('save my name is msgamecoder to memory'), ['name: msgamecoder']);
   assert.deepEqual(memory.extractFacts('my editor is neovim'), ['editor: neovim']);
   assert.deepEqual(memory.extractFacts('remember I prefer tabs'), ['preference: tabs']);
   assert.doesNotMatch(memory.extractFacts('what does this file do')[0] ?? '', /preference|name:/);
 
-  const first = memory.rememberFact('name: mxgamecoder');
-  const again = memory.rememberFact('name: mxgamecoder');
+  const first = memory.rememberFact('name: msgamecoder');
+  const again = memory.rememberFact('name: msgamecoder');
   assert.ok(first);
   assert.equal(again, null, 'the same fact must not be stored twice');
 });

@@ -201,14 +201,21 @@ function listFiles(root: string, limit = 400): string[] {
       if (entry === 'node_modules' || entry === '.git' || entry.startsWith('.')) continue;
       const full = join(dir, entry);
       try {
-        if (statSync(full).isDirectory()) stack.push(full);
-        else out.push(relative(root, full));
+        if (statSync(full).isDirectory()) {
+          out.push(`${relative(root, full)}/`);
+          stack.push(full);
+        } else out.push(relative(root, full));
       } catch {
         continue;
       }
     }
   }
-  return out.sort();
+  return out.sort((a, b) => {
+    const aDir = a.endsWith('/');
+    const bDir = b.endsWith('/');
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    return a.localeCompare(b);
+  });
 }
 
 function clipboardImage(): string | null {
@@ -450,21 +457,29 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     },
     assistant() {
       addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
-      let node: TextRenderable | null = null;
+      let node: TextRenderable | MarkdownRenderable | null = null;
       let buffer = '';
       const paint = (): void => {
         if (buffer.length === 0) return;
         if (!node) {
-          node = new TextRenderable(renderer, {
-            content: '',
-            fg: theme.text,
-            wrapMode: 'word',
-            flexShrink: 0,
-            selectable: true,
-          });
+          node = syntax
+            ? new MarkdownRenderable(renderer, {
+                content: '',
+                syntaxStyle: syntax,
+                fg: theme.text,
+                flexShrink: 0,
+              })
+            : new TextRenderable(renderer, {
+                content: '',
+                fg: theme.text,
+                wrapMode: 'word',
+                flexShrink: 0,
+                selectable: true,
+              });
           addNode(node);
         }
-        node.content = normalize(buffer);
+        if (node instanceof MarkdownRenderable) node.content = buffer;
+        else node.content = normalize(buffer);
         scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
       };
       const fresh = (): void => {
@@ -825,8 +840,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       .filter((file) => !needle || file.toLowerCase().includes(needle))
       .slice(0, 300);
     rows = files.length
-      ? files.map((file) => ({ kind: 'item' as const, label: file, value: file }))
-      : [{ kind: 'item', label: 'no matching files', value: '' }];
+      ? files.map((file) => ({
+          kind: 'item' as const,
+          label: file,
+          detail: file.endsWith('/') ? 'folder — the agent will read inside it' : undefined,
+          value: file,
+        }))
+      : [{ kind: 'item', label: `nothing matches "@${query}" — try fewer letters`, value: '' }];
     index = 0;
     offset = 0;
     drawModal();
@@ -1615,7 +1635,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         const message = error instanceof Error ? error.message : 'request failed';
         ui.wrap(`error: ${message}`, theme.error);
         ui.wrap(
-          'Type "continue" to try again. If the issue persists, open an issue: https://github.com/mxgamecoder/baton/issues',
+          'Type "continue" to try again. If the issue persists, open an issue: https://github.com/msgamecoder/baton/issues',
           theme.dim,
         );
       })
