@@ -162,6 +162,21 @@ export function tmuxSessionExists(name = 'baton'): boolean {
   return spawnSync(tmuxBin(), ['has-session', '-t', name], { stdio: 'ignore' }).status === 0;
 }
 
+const SHELL_COMMANDS = /^(bash|zsh|sh|fish|dash|ksh|mksh|nu|pwsh|powershell|cmd|cmd\.exe)$/i;
+
+export function tmuxSessionAlive(name = 'baton'): boolean {
+  const listed = spawnSync(tmuxBin(), ['list-panes', '-t', name, '-F', '#{pane_current_command}'], {
+    encoding: 'utf8',
+  });
+  if (listed.status !== 0) return false;
+  const commands = String(listed.stdout ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (commands.length === 0) return false;
+  return commands.some((command) => !SHELL_COMMANDS.test(command.split('/').pop() ?? command));
+}
+
 export function tmuxAttach(name = 'baton'): void {
   spawnSync(tmuxBin(), ['attach', '-t', name], { stdio: 'inherit' });
 }

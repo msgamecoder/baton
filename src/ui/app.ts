@@ -253,7 +253,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   }
 
   const renderer: CliRenderer = await createCliRenderer({
-    exitOnCtrlC: true,
+    exitOnCtrlC: false,
     backgroundColor: theme.bg,
     screenMode: 'alternate-screen',
     targetFps: 60,
@@ -1226,8 +1226,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     const [name, ...args] = trimmed.split(/\s+/);
 
     if (name === 'quit' || name === 'exit') {
-      renderer.destroy();
-      return;
+      return quitApp();
     }
     if (name === 'help') {
       const width = Math.max(...COMMANDS.map((command) => command.label.length)) + 3;
@@ -1427,14 +1426,28 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
   });
 
+  const quitApp = (): void => {
+    try {
+      if (thinkingTimer) clearInterval(thinkingTimer);
+    } catch {
+      /* nothing to stop */
+    }
+    try {
+      renderer.destroy();
+    } catch {
+      /* renderer already gone */
+    }
+    process.exit(0);
+  };
+
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(signal, () => quitApp());
+  }
+
   const handleKey = (key: any): void => {
     if (key?.ctrl && key?.name === 'c') {
-      try {
-        renderer.destroy();
-      } catch {
-        /* already gone */
-      }
-      process.exit(0);
+      quitApp();
+      return;
     }
     if (key?.ctrl && key?.name === 'o') {
       if (!mode && !inputPurpose) openMenu();

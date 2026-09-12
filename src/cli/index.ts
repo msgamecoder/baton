@@ -34,6 +34,7 @@ import {
   spawnBackground,
   stopAgents,
   tmuxAttach,
+  tmuxSessionAlive,
   tmuxSessionExists,
 } from '../core/launcher.ts';
 import { detectSplitters, pickSplitter, tmuxBin } from '../core/splitter.ts';
@@ -466,9 +467,14 @@ async function cmdUp(flags: Flags): Promise<void> {
         stamp = '';
       }
       const previous = existsSync(stampPath) ? readFileSync(stampPath, 'utf8').trim() : '';
-      if (stamp && previous && previous !== stamp) {
+      const changed = Boolean(stamp && previous && previous !== stamp);
+      if (changed || !tmuxSessionAlive()) {
         spawnSync(tmuxBin(), ['kill-session', '-t', 'baton'], { stdio: 'ignore' });
-        console.log('baton changed since that session started — restarting the panes with the new code');
+        console.log(
+          changed
+            ? 'baton changed since that session started — starting fresh panes with the new code'
+            : 'the last baton session had already exited — starting a fresh one',
+        );
       } else {
         if (stamp) writeFileSync(stampPath, stamp);
         const ensured = ensurePanes(config);
@@ -476,6 +482,7 @@ async function cmdUp(flags: Flags): Promise<void> {
         if (!process.env.TMUX) tmuxAttach();
         return;
       }
+      if (stamp) writeFileSync(stampPath, stamp);
     }
     const running = runningAgents();
     if (running.length > 0) {
