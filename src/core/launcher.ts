@@ -82,6 +82,8 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
     commands.push(`${tmux} set-window-option -t baton pane-border-status off`);
     commands.push(`${tmux} set-option -t baton pane-border-style 'fg=colour235,bg=colour235'`);
     commands.push(`${tmux} set-option -t baton pane-active-border-style 'fg=colour235,bg=colour235'`);
+    commands.push(`${tmux} set-option -t baton set-titles on`);
+    commands.push(`${tmux} set-option -t baton set-titles-string baton`);
     commands.push(`${tmux} select-pane -t baton:0.0`);
     commands.push(`${tmux} attach -t baton`);
     return {

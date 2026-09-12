@@ -255,9 +255,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     backgroundColor: theme.bg,
     screenMode: 'alternate-screen',
     targetFps: 60,
-    useMouse: true,
-    enableMouseMovement: true,
   });
+
+  try {
+    process.stdout.write('\u001b]0;baton\u0007');
+  } catch {
+    /* title is best effort */
+  }
 
   const root = new BoxRenderable(renderer, {
     id: 'root',
@@ -395,7 +399,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     const info = session.info();
     const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
     const money = price ? `  ·  $${cost(price, info.usage.inputTokens, info.usage.outputTokens).toFixed(4)}` : '';
-    footer.content = `${session.mode().toUpperCase()}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
+    footer.content = `${session.title()}  ·  ${session.mode().toUpperCase()}  ·  ${info.messages} msgs  ·  ${formatTokens(
       totalTokens(info.usage),
     )} tokens${money}${extra ? `  ·  ${extra}` : ''}`;
   };
@@ -678,18 +682,25 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     drawModal();
   };
 
+  let modelCache: { provider: string; models: string[] } | null = null;
+
   const openModels = async (): Promise<void> => {
     mode = 'model';
     title = 'Select model';
     modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
-    rows = [{ kind: 'item', label: 'loading models…', value: '' }];
-    index = 0;
-    offset = 0;
-    drawModal();
 
-    const models = await session.models();
+    const providerId = session.provider().id;
+    if (!modelCache || modelCache.provider !== providerId) {
+      rows = [{ kind: 'item', label: 'loading models…', value: '' }];
+      index = 0;
+      offset = 0;
+      drawModal();
+      const models = await session.models();
+      modelCache = { provider: providerId, models };
+    }
+
     const needle = query.toLowerCase();
-    const list: Row[] = models
+    const list: Row[] = modelCache.models
       .filter((name) => !needle || name.toLowerCase().includes(needle))
       .map((name) => ({
         kind: 'item' as const,
@@ -709,13 +720,20 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     title = 'Sessions';
     modalFooter = '↑/↓ move   ·   enter switch   ·   ctrl+d delete   ·   esc close';
     const needle = query.toLowerCase();
-    const records = session.listSessions().filter((record) => !needle || record.id.toLowerCase().includes(needle));
+    const records = session
+      .listSessions()
+      .filter(
+        (record) =>
+          !needle ||
+          record.id.toLowerCase().includes(needle) ||
+          (record.title ?? '').toLowerCase().includes(needle),
+      );
     const list: Row[] = records.map((record) => ({
       kind: 'item' as const,
-      label: record.id,
+      label: record.title || record.id,
       detail: `${record.messages.filter((m) => m.role !== 'system').length} msgs  ·  ${formatTokens(
         totalTokens(record.usage),
-      )} tokens  ·  ${record.model}`,
+      )} tokens  ·  ${record.model}  ·  ${record.id}`,
       value: record.id,
     }));
     const today = new Date();
@@ -939,6 +957,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         return;
       }
       session.setProvider(id);
+      modelCache = null;
       ui.line(`provider → ${provider.name}`, theme.user);
       closeModal();
       void openModels();
@@ -1393,8 +1412,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     else if (mode === 'sessions' && key?.ctrl && key?.name === 'd') {
       const row = rows[index];
       if (row?.value) {
-        session.deleteSession(row.value);
-        ui.line(`deleted ${row.value}`, theme.dim);
+        const id = String(row.value);
+        const wasCurrent = id === session.info().id;
+        session.deleteSession(id);
+        if (wasCurrent) {
+          session.newSession();
+          ui.clear();
+          ui.line('that was your current session — started a new one', theme.user);
+          setFooter();
+        } else {
+          ui.line(`deleted ${id}`, theme.dim);
+        }
         openSessions();
       }
     }

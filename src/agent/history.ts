@@ -11,6 +11,7 @@ export interface Usage {
 
 export interface SessionRecord {
   id: string;
+  title?: string;
   agent: string;
   provider: string;
   model: string;
@@ -18,6 +19,12 @@ export interface SessionRecord {
   updatedAt: number;
   messages: ChatMessage[];
   usage: Usage;
+}
+
+export function titleFromMessage(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return 'untitled';
+  return clean.length > 48 ? `${clean.slice(0, 47)}…` : clean;
 }
 
 export function emptyUsage(): Usage {

@@ -26,6 +26,7 @@ import {
   newSessionId,
   readSessionRecord,
   saveSessionRecord,
+  titleFromMessage,
   totalTokens,
   type SessionRecord,
   type Usage,
@@ -72,6 +73,7 @@ export interface Session {
   provider(): Provider;
   model(): string;
   sessionId(): string;
+  title(): string;
   info(): SessionInfo;
   models(): Promise<string[]>;
   setModel(model: string): void;
@@ -167,6 +169,7 @@ export function createSession(options: SessionOptions): Session {
   });
 
   let sessionId = options.session ?? newSessionId();
+  let title = '';
   let createdAt = Date.now();
   let usage: Usage = emptyUsage();
   let messages: ChatMessage[] = [system()];
@@ -178,6 +181,7 @@ export function createSession(options: SessionOptions): Session {
       createdAt = existing.createdAt;
       usage = existing.usage ?? emptyUsage();
       messages = existing.messages.length ? existing.messages : [system()];
+      title = existing.title ?? '';
       if (existing.model) model = existing.model;
       const found = getProvider(existing.provider, loadConfig().customProviders);
       if (found) {
@@ -190,6 +194,7 @@ export function createSession(options: SessionOptions): Session {
   const persist = (): void => {
     saveSessionRecord({
       id: sessionId,
+      title: title || undefined,
       agent: options.agent,
       provider: provider.id,
       model,
@@ -425,6 +430,7 @@ export function createSession(options: SessionOptions): Session {
     provider: () => provider,
     model: () => model,
     sessionId: () => sessionId,
+    title: () => title || sessionId,
     info: () => ({ id: sessionId, provider: provider.id, model, messages: messages.length - 1, usage }),
     models: fetchModels,
     setModel: (next: string) => {
@@ -471,6 +477,7 @@ export function createSession(options: SessionOptions): Session {
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
       sessionId = newSessionId();
+      title = '';
       createdAt = Date.now();
       usage = emptyUsage();
       messages = [system()];
@@ -480,6 +487,7 @@ export function createSession(options: SessionOptions): Session {
       const record = readSessionRecord(id);
       if (!record) return false;
       sessionId = record.id;
+      title = record.title ?? '';
       createdAt = record.createdAt;
       usage = record.usage ?? emptyUsage();
       messages = record.messages.length ? record.messages : [system()];
@@ -532,6 +540,7 @@ export function createSession(options: SessionOptions): Session {
       }
 
       ui.user(trimmed);
+      if (!title) title = titleFromMessage(trimmed);
       messages.push({ role: 'user', content: trimmed });
       messages = trimHistory(messages);
       if (historySize() > 60_000) {
