@@ -1560,7 +1560,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     setFooter();
 
     const handoff = messages.find(
-      (message) => message.type === 'handoff' && message.to === options.agent && message.from !== options.agent,
+      (message) =>
+        (message.type === 'handoff' || message.type === 'question') &&
+        message.to === options.agent &&
+        message.from !== options.agent,
     );
     if (!handoff) return;
 
@@ -1577,12 +1580,16 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
 
     autoTurns += 1;
+    const isQuestion = handoff.type === 'question';
     const instruction = [
-      `${handoff.from} handed work to you over the relay.`,
+      `${handoff.from} ${isQuestion ? 'is asking you a question' : 'handed work to you'} over the relay.`,
       handoff.summary,
+      ...(handoff.body ? [handoff.body] : []),
       ...(handoff.next?.length ? [`Next steps: ${handoff.next.join('; ')}`] : []),
       ...(handoff.built?.length ? [`Files built: ${handoff.built.map((entry) => entry.path).join(', ')}`] : []),
-      `Do it now. When you finish, hand back with: baton send --from ${options.agent} --to ${handoff.from} --hop ${hop + 1} --summary "..."`,
+      isQuestion
+        ? `Answer them, then reply with: baton send --from ${options.agent} --to ${handoff.from} --type answer --hop ${hop + 1} --summary "..."`
+        : `Do it now. When you finish, hand back with: baton send --from ${options.agent} --to ${handoff.from} --hop ${hop + 1} --summary "..."`,
     ].join('\n');
 
     ui.line(`auto-continuing from ${handoff.from}…`, theme.tool);
