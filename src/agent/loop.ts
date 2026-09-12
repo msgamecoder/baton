@@ -75,12 +75,13 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
     }
 
     if (message.role === 'assistant' && message.toolCalls?.length) {
-      const answered = new Set(
-        messages
-          .slice(i + 1)
-          .filter((entry) => entry.role === 'tool')
-          .map((entry) => entry.toolCallId),
-      );
+      const run: ChatMessage[] = [];
+      let next = i + 1;
+      while (next < messages.length && messages[next]?.role === 'tool') {
+        run.push(messages[next]);
+        next += 1;
+      }
+      const answered = new Set(run.map((entry) => entry.toolCallId));
       const kept = message.toolCalls.filter((call) => answered.has(call.id));
       if (!kept.length && !message.content) continue;
       out.push(kept.length ? { ...message, toolCalls: kept } : { role: 'assistant', content: message.content });

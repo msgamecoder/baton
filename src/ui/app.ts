@@ -67,6 +67,7 @@ export interface ChatUi {
   assistant(): { set(text: string): void; append(chunk: string): void; done(): void };
   line(text: string, color?: string): void;
   wrap(text: string, color?: string): void;
+  markdown(text: string, color?: string): void;
   setModel(model: string): void;
   clear(): void;
   ask?(question: string, options: string[]): Promise<string>;
@@ -520,6 +521,24 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           }),
         );
       }
+    },
+    markdown(text, color) {
+      segmentBreak = true;
+      const node =
+        syntax !== null
+          ? new MarkdownRenderable(renderer, {
+              content: text,
+              syntaxStyle: syntax,
+              fg: color ?? theme.text,
+              flexShrink: 0,
+            })
+          : new TextRenderable(renderer, {
+              content: text,
+              fg: color ?? theme.text,
+              wrapMode: 'word',
+              flexShrink: 0,
+            });
+      addNode(node);
     },
     line(text, color) {
       segmentBreak = true;
@@ -1634,9 +1653,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'request failed';
         ui.wrap(`error: ${message}`, theme.error);
-        ui.wrap(
-          'Type "continue" to try again. If the issue persists, open an issue: https://github.com/msgamecoder/baton/issues',
-          theme.dim,
+        ui.line('', theme.dim);
+        ui.markdown(
+          '**Type "continue" to try again.** If the issue persists, open an issue: https://github.com/msgamecoder/baton/issues',
+          theme.pick,
         );
       })
       .finally(() => {

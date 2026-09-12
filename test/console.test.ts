@@ -20,6 +20,35 @@ const { parseKeys } = await import('../src/ui/select.ts');
 const { READ_ONLY_TOOLS, TOOLS } = await import('../src/agent/tools.ts');
 const memory = await import('../src/core/memory.ts');
 const { providerHeaders } = await import('../src/providers/client.ts');
+const { sanitizeHistory } = await import('../src/agent/loop.ts');
+
+test('sanitizeHistory never leaves a tool_calls without its result', () => {
+  const call = { id: 'a', name: 'read_file', arguments: '{}' };
+  const assistant = { role: 'assistant' as const, content: '', toolCalls: [call] };
+  const tool = { role: 'tool' as const, toolCallId: 'a', content: 'ok' };
+  const user = { role: 'user' as const, content: 'hi' };
+
+  // healthy pairing survives
+  assert.equal(sanitizeHistory([user, assistant, tool] as never).length, 3);
+
+  // a user message landed between the call and its result: the tool_calls must go
+  const split = sanitizeHistory([user, assistant, user, tool] as never);
+  assert.equal(
+    split.some((message) => message.toolCalls?.length),
+    false,
+  );
+
+  // a result with no call at all is dropped
+  assert.equal(sanitizeHistory([user, tool] as never).length, 1);
+
+  // only the answered call is kept, and it stays directly answered
+  const two = { role: 'assistant' as const, content: '', toolCalls: [call, { id: 'b', name: 'x', arguments: '{}' }] };
+  const repaired = sanitizeHistory([user, two, tool] as never);
+  const kept = repaired.find((message) => message.toolCalls?.length);
+  assert.equal(kept?.toolCalls?.length, 1);
+  assert.equal(kept?.toolCalls?.[0].id, 'a');
+  assert.equal(repaired[repaired.length - 1].role, 'tool');
+});
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
