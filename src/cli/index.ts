@@ -966,6 +966,7 @@ async function cmdChat(flags: Flags): Promise<void> {
       });
       await runChatApp({
         session,
+        agent: context.agent,
         providerName: context.provider.name,
         model: context.model,
         cwd,
