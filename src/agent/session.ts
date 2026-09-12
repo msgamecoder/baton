@@ -512,6 +512,8 @@ export function createSession(options: SessionOptions): Session {
           readOnly: agentMode === 'plan',
           events: {
             onText: (chunk) => stream.append(chunk),
+            onRetry: (attempt, message) =>
+              ui.line(`connecting… retry ${attempt}/10  (${message.slice(0, 90)})`, '#e0b070'),
             onToolStart: (call) => ui.line(`-> ${call.name}`, '#e0b070'),
             onToolEnd: (_call, output, isError) => {
               const first = output.split('\n')[0].slice(0, 120);

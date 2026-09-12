@@ -6,6 +6,7 @@ import type { Provider } from '../providers/registry.ts';
 
 export interface TurnEvents {
   onText?: (chunk: string) => void;
+  onRetry?: (attempt: number, message: string) => void;
   onToolStart?: (call: ToolCall) => void;
   onToolEnd?: (call: ToolCall, output: string, isError: boolean) => void;
   onTurn?: (n: number) => void;
@@ -37,6 +38,7 @@ export function buildSystemPrompt(cwd: string, extra?: string): string {
     'Be economical with tokens — they cost the user money. Never paste a whole file when a targeted edit will do, do not re-read a file you have already read, do not repeat the plan back, and keep answers short.',
     'For multi-step work, create tasks with task_create and keep them updated as you go.',
     'If you are unsure between options, use ask_user instead of guessing.',
+    'You can search the web with web_search and read a page with web_fetch when you need current information.',
   ];
   if (extra) parts.push('', extra);
   return parts.join('\n');
@@ -86,6 +88,7 @@ export async function runTurn(
       signal: options.signal,
       maxTokens: options.maxTokens,
       onText: events.onText,
+      onRetry: events.onRetry,
     });
 
     usage.inputTokens += result.usage.inputTokens;

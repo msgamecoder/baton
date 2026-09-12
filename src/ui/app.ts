@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
@@ -23,6 +23,7 @@ import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { memoryBlock, memoryLines, rememberFact, type MemoryEntry } from '../core/memory.ts';
 import { formatTaskList } from '../agent/tasks.ts';
 import { runUpdate, type Session } from '../agent/session.ts';
+import { ensurePanes } from '../core/launcher.ts';
 import { formatTokens, totalTokens } from '../agent/history.ts';
 
 interface Theme {
@@ -164,7 +165,8 @@ type Mode =
   | 'file'
   | 'info'
   | 'custom-format'
-  | 'question';
+  | 'question'
+  | 'menu';
 
 function visibleLength(text: string): number {
   return text.replace(/\u001b\[[0-9;]*m/g, '').length;
@@ -251,6 +253,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     backgroundColor: theme.bg,
     screenMode: 'alternate-screen',
     targetFps: 60,
+    useMouse: true,
+    enableMouseMovement: false,
   });
 
   const root = new BoxRenderable(renderer, {
@@ -445,7 +449,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       };
     },
     line(text, color) {
-      addNode(new TextRenderable(renderer, { content: text, fg: color ?? theme.dim, wrapMode: 'word', selectable: true }));
+      const rows = text.split('\n');
+      const shown = rows
+        .slice(0, 24)
+        .map((row) => (row.length > 240 ? `${row.slice(0, 240)}…` : row));
+      if (rows.length > 24) shown.push(`… ${rows.length - 24} more lines hidden`);
+      for (const row of shown) {
+        addNode(
+          new TextRenderable(renderer, {
+            content: row,
+            fg: color ?? theme.dim,
+            selectable: true,
+            height: 1,
+            flexShrink: 0,
+            truncate: true,
+          }),
+        );
+      }
     },
     setModel(model) {
       subtitle.content = `${options.providerName}   ·   ${model}`;
@@ -828,6 +848,19 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     overlay.visible = true;
   };
 
+  const openMenu = (): void => {
+    mode = 'menu';
+    title = 'Menu';
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc close';
+    rows = [
+      { kind: 'item', label: 'open agent', detail: 'add the other pane back', value: 'open-agent' },
+      { kind: 'item', label: 'copy', detail: 'copy the last reply', value: 'copy' },
+    ];
+    index = 0;
+    offset = 0;
+    drawModal();
+  };
+
   const openCustomFormat = (): void => {
     mode = 'custom-format';
     title = 'Custom provider — format';
@@ -902,6 +935,22 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       ui.line(`provider → ${provider.name}`, theme.user);
       closeModal();
       void openModels();
+      return;
+    }
+
+    if (mode === 'menu') {
+      closeModal();
+      if (row.value === 'open-agent') {
+        const result = ensurePanes(loadConfig());
+        ui.line(result.message, result.added > 0 ? theme.user : theme.dim);
+      } else if (row.value === 'copy') {
+        if (!lastReply) ui.line('nothing to copy yet', theme.dim);
+        else {
+          const ok = copyToClipboard(lastReply);
+          ui.line(ok ? 'copied' : 'no clipboard tool found', ok ? theme.user : theme.error);
+        }
+      }
+      input.focus();
       return;
     }
 
@@ -1279,6 +1328,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
 
   const handleKey = (key: any): void => {
+    if (key?.ctrl && key?.name === 'o') {
+      if (!mode && !inputPurpose) openMenu();
+      return;
+    }
     if (key?.ctrl && key?.name === 'v') {
       const image = clipboardImage();
       if (image) {
@@ -1411,6 +1464,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       });
   });
 
+  renderer.on('mouse' as never, (event: { type?: string; button?: string }) => {
+    if (process.env.BATON_DEBUG_MOUSE) {
+      try {
+        appendFileSync('/tmp/baton-mouse.log', `${JSON.stringify(event)}\n`);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (event?.type === 'down' && event?.button === 'right' && !mode && !inputPurpose) openMenu();
+  });
+
   renderer.on('selection' as never, () => {
     try {
       const text = (renderer as unknown as { getSelectedText?: () => string }).getSelectedText?.();
@@ -1425,6 +1489,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
 
   const TIPS = [
+    'right-click (or ctrl+o) opens a menu: copy, or open the other agent',
     'you can switch models any time with  /model',
     'connect another provider with  /provider',
     'say  "save my name is … to memory"  and it is kept forever',

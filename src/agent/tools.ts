@@ -11,7 +11,9 @@ export interface ToolContext {
   ask?: (question: string, options: string[]) => Promise<string>;
 }
 
-const MAX_OUTPUT = 20000;
+const MAX_OUTPUT = 6000;
+const MAX_LINES = 200;
+const MAX_LINE = 400;
 const MAX_WALK = 20000;
 
 export const TOOLS: ToolSpec[] = [
@@ -75,6 +77,28 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: 'web_search',
+    description:
+      'Search the web for current information you do not have (news, docs, versions, prices). Returns titles, urls and snippets.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        max_results: { type: 'number', description: 'default 6' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'web_fetch',
+    description: 'Fetch a URL and return its readable text, so you can read the page yourself.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+    },
+  },
+  {
     name: 'task_create',
     description:
       'Create a task to track work on a bigger job, then keep it updated as you go. Create them before starting, mark one in_progress at a time, and complete each as you finish.',
@@ -132,8 +156,14 @@ export const TOOLS: ToolSpec[] = [
 ];
 
 function truncate(text: string): string {
-  if (text.length <= MAX_OUTPUT) return text;
-  return `${text.slice(0, MAX_OUTPUT)}\n... [truncated ${text.length - MAX_OUTPUT} chars]`;
+  const lines = text.split('\n');
+  let out = lines
+    .slice(0, MAX_LINES)
+    .map((line) => (line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)}…` : line))
+    .join('\n');
+  if (lines.length > MAX_LINES) out += `\n... [${lines.length - MAX_LINES} more lines hidden — narrow the command]`;
+  if (out.length > MAX_OUTPUT) out = `${out.slice(0, MAX_OUTPUT)}\n... [output truncated]`;
+  return out;
 }
 
 function resolvePath(cwd: string, path: string): string {
@@ -187,6 +217,56 @@ function walk(root: string, limit = MAX_WALK): string[] {
 
 const WRITE_TOOLS = ['write_file', 'edit_file', 'shell'];
 export const READ_ONLY_TOOLS: ToolSpec[] = TOOLS.filter((tool) => !WRITE_TOOLS.includes(tool.name));
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function webSearch(query: string, maxResults: number): Promise<string> {
+  const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+    headers: { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+  });
+  if (!response.ok) return `search failed: HTTP ${response.status}`;
+  const html = await response.text();
+  const blocks = html.split(/<div[^>]+class="[^"]*result[^"]*"/i).slice(1);
+  const results: string[] = [];
+  for (const block of blocks) {
+    const link = block.match(/href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (!link) continue;
+    let url = link[1];
+    const redirect = url.match(/uddg=([^&]+)/);
+    if (redirect) url = decodeURIComponent(redirect[1]);
+    const title = stripHtml(link[2]);
+    const snippetMatch = block.match(/class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
+    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : '';
+    if (!title || !url.startsWith('http')) continue;
+    results.push(`${results.length + 1}. ${title}\n   ${url}${snippet ? `\n   ${snippet}` : ''}`);
+    if (results.length >= maxResults) break;
+  }
+  return results.length ? results.join('\n\n') : 'no results';
+}
+
+async function webFetch(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+  });
+  if (!response.ok) return `fetch failed: HTTP ${response.status}`;
+  const type = response.headers.get('content-type') ?? '';
+  const body = await response.text();
+  const text = type.includes('html') ? stripHtml(body) : body;
+  return truncate(`${url}\n\n${text}`);
+}
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
@@ -277,6 +357,17 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
           if (hits.length >= 200) break;
         }
         return { output: hits.length ? truncate(hits.join('\n')) : 'no matches' };
+      }
+      case 'web_search': {
+        const query = String(args.query ?? '').trim();
+        if (!query) return { output: 'query is required', isError: true };
+        const max = typeof args.max_results === 'number' ? Math.min(args.max_results, 10) : 6;
+        return { output: await webSearch(query, max) };
+      }
+      case 'web_fetch': {
+        const url = String(args.url ?? '').trim();
+        if (!/^https?:\/\//i.test(url)) return { output: 'url must start with http(s)://', isError: true };
+        return { output: await webFetch(url) };
       }
       case 'task_create': {
         if (!ctx.sessionId) return { output: 'tasks are not available here', isError: true };

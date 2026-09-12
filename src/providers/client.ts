@@ -31,6 +31,7 @@ export interface StreamOptions {
   tools?: ToolSpec[];
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
+  onRetry?: (attempt: number, message: string) => void;
   maxTokens?: number;
 }
 
@@ -172,7 +173,7 @@ function toAnthropicTools(tools: ToolSpec[]): unknown[] {
 }
 
 export async function streamChat(options: StreamOptions): Promise<StreamResult> {
-  const { provider, apiKey, model, messages, tools = [], signal, onText, maxTokens } = options;
+  const { provider, apiKey, model, messages, tools = [], signal, onText, onRetry, maxTokens } = options;
   const url = `${provider.baseUrl}${provider.chatPath}`;
   const state = newStreamState();
 
@@ -205,37 +206,64 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
     };
   }
 
-  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
-  if (!response.ok || !response.body) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`${provider.name} returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
-  }
+  const streamOnce = async (): Promise<void> => {
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+    if (!response.ok || !response.body) {
+      const detail = await response.text().catch(() => '');
+      const error = new Error(
+        `${provider.name} returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+      ) as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const { events, rest } = splitSSE(buffer);
-    buffer = rest;
+      const { events, rest } = splitSSE(buffer);
+      buffer = rest;
 
-    for (const block of events) {
-      const { data } = parseSSEEvent(block);
-      if (!data || data === '[DONE]') continue;
-      let json: any;
-      try {
-        json = JSON.parse(data);
-      } catch {
-        continue;
+      for (const block of events) {
+        const { data } = parseSSEEvent(block);
+        if (!data || data === '[DONE]') continue;
+        let json: any;
+        try {
+          json = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (provider.format === 'anthropic') applyAnthropicEvent(state, json, onText);
+        else applyOpenAIChunk(state, json, onText);
       }
-      if (provider.format === 'anthropic') applyAnthropicEvent(state, json, onText);
-      else applyOpenAIChunk(state, json, onText);
+    }
+  };
+
+  const MAX_ATTEMPTS = 10;
+  let failure: unknown = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await streamOnce();
+      failure = null;
+      break;
+    } catch (error) {
+      failure = error;
+      const status = (error as { status?: number }).status;
+      const retryable = status === undefined || status === 429 || status >= 500;
+      const alreadyStreamed = state.text.length > 0 || state.toolCalls.length > 0;
+      if (!retryable || alreadyStreamed || attempt === MAX_ATTEMPTS) break;
+      onRetry?.(attempt, error instanceof Error ? error.message : 'request failed');
+      await new Promise((resolve) => setTimeout(resolve, Math.min(400 * attempt, 4000)));
     }
   }
+
+  if (failure && state.text.length === 0 && state.toolCalls.length === 0) throw failure;
 
   state.toolCalls = state.toolCalls.filter((call) => call && call.name);
   return state;
