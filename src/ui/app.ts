@@ -295,12 +295,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   // "Nova · left" — the agent's name and the pane it lives in
-  const selfLabel = ((): string => {
+  let selfLabel = ((): string => {
     if (options.agentLabel) return options.agentLabel;
     const agent = resolveAgent(loadConfig().agents, options.agent);
     return agent ? formatAgent(agent) : options.agent;
   })();
-  const selfAliases = ((): string[] => agentAliases(loadConfig().agents, options.agent))();
+  let selfAliases = ((): string[] => agentAliases(loadConfig().agents, options.agent))();
 
   const root = new BoxRenderable(renderer, {
     id: 'root',
@@ -1013,6 +1013,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     input.placeholder = 'Ask anything…    /  commands    @  files';
     setInput('');
     input.focus();
+  };
+
+  // name this agent (used when an older config still says "left"/"right")
+  const nameSelf = (name: string): void => {
+    const config = loadConfig();
+    const me = resolveAgent(config.agents, options.agent);
+    const index = me ? config.agents.indexOf(me) : -1;
+    if (me && index >= 0) {
+      config.agents[index] = { ...me, name, role: me.role ?? options.agent };
+      saveConfig(config);
+      selfLabel = formatAgent(config.agents[index]);
+      selfAliases = agentAliases(config.agents, name);
+    } else {
+      selfLabel = name;
+      selfAliases = [name];
+    }
+    subtitle.content = `${selfLabel}   ·   ${options.providerName}   ·   ${session.model()}   ·   v${options.version}`;
   };
 
   setConfirmHandler(async (question) => {
@@ -1736,9 +1753,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (!mode) {
       if (inputPurpose) {
         if (key?.name === 'escape') {
+          const purpose = inputPurpose;
           pendingProvider = '';
           endInput();
-          ui.line('cancelled', theme.dim);
+          ui.line(purpose === 'agent-name' ? 'kept the default name' : 'cancelled', theme.dim);
         }
         return;
       }
@@ -1816,6 +1834,25 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
       if (purpose === 'custom-key') {
         finishCustom(answer);
+        return;
+      }
+      if (purpose === 'agent-name') {
+        if (!answer || /\s/.test(answer)) {
+          ui.line('give it a one-word name', theme.error);
+          return;
+        }
+        const config = loadConfig();
+        const me = resolveAgent(config.agents, options.agent);
+        const clash = config.agents.find(
+          (agent) => agent !== me && agent.name.toLowerCase() === answer.toLowerCase(),
+        );
+        if (clash) {
+          ui.line(`"${answer}" is already the other agent — pick another name`, theme.error);
+          return;
+        }
+        nameSelf(answer);
+        endInput();
+        ui.line(`this agent is now ${selfLabel}`, theme.user);
         return;
       }
       if (purpose === 'ask') {
@@ -1995,4 +2032,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   ui.line('', theme.dim);
   setFooter();
   input.focus();
+
+  // an older config still calls this agent "left"/"right" — ask for its name in the UI
+  const bootAgent = resolveAgent(loadConfig().agents, options.agent);
+  if (bootAgent && /^(left|right)$/i.test(bootAgent.name)) {
+    const role = bootAgent.role ?? options.agent;
+    ui.line(`this agent has no name yet (role: ${role}) — give it one`, theme.dim);
+    beginInput('agent-name', `name this agent — ${role}`, 'e.g. Nova');
+  }
 }

@@ -170,7 +170,8 @@ baton status / log / logs / kill
 
 Each agent has a unique `name` and a `role` (`left` / `right`, the pane it lives in). You can
 address it by either — `baton send --to Nova` or `baton send --to left` — and the UI shows
-both, as `Nova · left`. The setup wizard asks for the two names.
+both, as `Nova · left`. A fresh config names them Nova (left) and Rex (right); an older
+config still named "left"/"right" asks for a name inside the app on the next launch.
 
 ```json
 {
