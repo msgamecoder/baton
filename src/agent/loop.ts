@@ -54,11 +54,17 @@ export function describeToolCall(call: ToolCall): string {
 export async function runTurn(
   messages: ChatMessage[],
   options: TurnOptions,
-): Promise<{ messages: ChatMessage[]; finalText: string; turns: number }> {
+): Promise<{
+  messages: ChatMessage[];
+  finalText: string;
+  turns: number;
+  usage: { inputTokens: number; outputTokens: number };
+}> {
   const maxTurns = options.maxTurns ?? 40;
   const events = options.events ?? {};
   const tools = options.tools === false ? [] : TOOLS;
   const history = [...messages];
+  const usage = { inputTokens: 0, outputTokens: 0 };
   let finalText = '';
   let turn = 0;
 
@@ -75,6 +81,9 @@ export async function runTurn(
       maxTokens: options.maxTokens,
       onText: events.onText,
     });
+
+    usage.inputTokens += result.usage.inputTokens;
+    usage.outputTokens += result.usage.outputTokens;
 
     history.push({
       role: 'assistant',
@@ -104,5 +113,5 @@ export async function runTurn(
     }
   }
 
-  return { messages: history, finalText, turns: turn };
+  return { messages: history, finalText, turns: turn, usage };
 }

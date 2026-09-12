@@ -74,8 +74,17 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
     for (const agent of agents.slice(1)) {
       commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent)}'`);
     }
+    commands.push(`${tmux} set-option -t baton status off`);
+    commands.push(`${tmux} set-option -t baton mouse on`);
+    commands.push(`${tmux} set-window-option -t baton pane-border-status off`);
+    commands.push(`${tmux} select-pane -t baton:0.0`);
     commands.push(`${tmux} attach -t baton`);
-    return { splitter: 'tmux', commands, note: 'one tmux session, one pane per agent', background: false };
+    return {
+      splitter: 'tmux',
+      commands,
+      note: 'one tmux session, one pane per agent (status bar off, mouse on)',
+      background: false,
+    };
   }
 
   if (splitter.name === 'wt' && agents.length > 0) {

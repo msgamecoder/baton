@@ -5,6 +5,7 @@ export interface StreamResult {
   text: string;
   toolCalls: ToolCall[];
   stopReason?: string;
+  usage: { inputTokens: number; outputTokens: number };
 }
 
 export interface StreamOptions {
@@ -35,10 +36,14 @@ export function parseSSEEvent(block: string): { event?: string; data?: string } 
 }
 
 export function newStreamState(): StreamResult {
-  return { text: '', toolCalls: [] };
+  return { text: '', toolCalls: [], usage: { inputTokens: 0, outputTokens: 0 } };
 }
 
 export function applyOpenAIChunk(state: StreamResult, json: any, onText?: (t: string) => void): void {
+  if (json?.usage) {
+    if (typeof json.usage.prompt_tokens === 'number') state.usage.inputTokens = json.usage.prompt_tokens;
+    if (typeof json.usage.completion_tokens === 'number') state.usage.outputTokens = json.usage.completion_tokens;
+  }
   const choice = json?.choices?.[0];
   const delta = choice?.delta;
   if (typeof delta?.content === 'string' && delta.content) {
@@ -59,6 +64,12 @@ export function applyOpenAIChunk(state: StreamResult, json: any, onText?: (t: st
 }
 
 export function applyAnthropicEvent(state: StreamResult, evt: any, onText?: (t: string) => void): void {
+  if (evt?.type === 'message_start' && evt.message?.usage?.input_tokens) {
+    state.usage.inputTokens = evt.message.usage.input_tokens;
+  }
+  if (evt?.type === 'message_delta' && evt.usage?.output_tokens) {
+    state.usage.outputTokens = evt.usage.output_tokens;
+  }
   if (evt?.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
     const index = typeof evt.index === 'number' ? evt.index : 0;
     state.toolCalls[index] = { id: evt.content_block.id, name: evt.content_block.name, arguments: '' };
@@ -170,6 +181,7 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
     body = {
       model,
       stream: true,
+      stream_options: { include_usage: true },
       messages: toOpenAIMessages(messages),
       ...(tools.length ? { tools: toOpenAITools(tools) } : {}),
     };

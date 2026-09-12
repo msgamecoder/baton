@@ -965,11 +965,10 @@ async function cmdChat(flags: Flags): Promise<void> {
         autoApprove: context.autoApprove,
       });
       await runChatApp({
-        agent: context.agent,
+        session,
         providerName: context.provider.name,
         model: context.model,
         cwd,
-        handle: (input, ui) => session.handle(input, ui),
       });
       return;
     } catch (error) {

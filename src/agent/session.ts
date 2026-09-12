@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseSlash, slashHelp, directiveHelp } from '../core/console.ts';
 import { memoryBlock, remember } from '../core/memory.ts';
 import { protocolText } from '../core/instructions.ts';
@@ -9,6 +11,18 @@ import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildSystemPrompt, runTurn } from './loop.ts';
 import type { ChatMessage } from '../providers/types.ts';
+import {
+  deleteSessionRecord,
+  emptyUsage,
+  escapeHtml,
+  listSessionRecords,
+  newSessionId,
+  readSessionRecord,
+  saveSessionRecord,
+  totalTokens,
+  type SessionRecord,
+  type Usage,
+} from './history.ts';
 
 export interface StreamHandle {
   set(text: string): void;
@@ -30,12 +44,82 @@ export interface SessionOptions {
   apiKey?: string;
   cwd: string;
   autoApprove: boolean;
+  session?: string;
+}
+
+export type ExportFormat = 'md' | 'html' | 'json';
+
+export interface SessionInfo {
+  id: string;
+  provider: string;
+  model: string;
+  messages: number;
+  usage: Usage;
 }
 
 export interface Session {
   handle(input: string, ui: SessionUi): Promise<void>;
   provider(): Provider;
   model(): string;
+  sessionId(): string;
+  info(): SessionInfo;
+  models(): Promise<string[]>;
+  setModel(model: string): void;
+  listSessions(): SessionRecord[];
+  resume(id: string): boolean;
+  newSession(): void;
+  deleteSession(id: string): boolean;
+  exportSession(format: ExportFormat, name: string): string;
+}
+
+function toMarkdown(record: SessionRecord): string {
+  const lines = [
+    `# Baton session ${record.id}`,
+    '',
+    `- agent: ${record.agent}`,
+    `- provider: ${record.provider}`,
+    `- model: ${record.model}`,
+    `- tokens: ${totalTokens(record.usage)} (${record.usage.inputTokens} in / ${record.usage.outputTokens} out)`,
+    '',
+  ];
+  for (const message of record.messages) {
+    if (message.role === 'system') continue;
+    if (message.role === 'user') lines.push(`## you`, '', message.content, '');
+    else if (message.role === 'assistant') lines.push(`## baton`, '', message.content || '_(tool call)_', '');
+    else lines.push('```', message.content, '```', '');
+  }
+  return lines.join('\n');
+}
+
+function toHtml(record: SessionRecord): string {
+  const body = record.messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const who = message.role === 'user' ? 'you' : message.role === 'assistant' ? 'baton' : 'tool';
+      return `<section class="${who}"><h2>${who}</h2><pre>${escapeHtml(message.content)}</pre></section>`;
+    })
+    .join('\n');
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Baton session ${record.id}</title>
+<style>
+body{background:#0f0f17;color:#dcdcec;font:14px/1.5 ui-monospace,monospace;margin:0;padding:24px}
+h1{color:#8b7bd8} h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#8b7bd8;margin:0 0 6px}
+section{margin:0 0 20px;padding:12px 16px;border-radius:8px;background:#16161f}
+section.you{background:#16211d} section.tool{opacity:.7}
+pre{white-space:pre-wrap;margin:0}
+</style></head>
+<body><h1>Baton · ${record.id}</h1>
+<p>${record.agent} · ${record.provider} · ${record.model} · ${totalTokens(record.usage)} tokens</p>
+${body}
+</body></html>`;
+}
+
+function writeExport(record: SessionRecord, format: ExportFormat, name: string): string {
+  const file = join(process.cwd(), `${name}.${format}`);
+  const content =
+    format === 'json' ? `${JSON.stringify(record, null, 2)}\n` : format === 'md' ? toMarkdown(record) : toHtml(record);
+  writeFileSync(file, content);
+  return file;
 }
 
 export function createSession(options: SessionOptions): Session {
@@ -48,9 +132,42 @@ export function createSession(options: SessionOptions): Session {
     role: 'system',
     content: buildSystemPrompt(options.cwd, `${protocolText()}\n${memoryBlock()}`),
   });
+
+  let sessionId = options.session ?? newSessionId();
+  let createdAt = Date.now();
+  let usage: Usage = emptyUsage();
   let messages: ChatMessage[] = [system()];
 
-  const promptForModels = async (): Promise<string[]> => {
+  if (options.session) {
+    const existing = readSessionRecord(options.session);
+    if (existing) {
+      sessionId = existing.id;
+      createdAt = existing.createdAt;
+      usage = existing.usage ?? emptyUsage();
+      messages = existing.messages.length ? existing.messages : [system()];
+      if (existing.model) model = existing.model;
+      const found = getProvider(existing.provider, loadConfig().customProviders);
+      if (found) {
+        provider = found;
+        apiKey = resolveKey(found);
+      }
+    }
+  }
+
+  const persist = (): void => {
+    saveSessionRecord({
+      id: sessionId,
+      agent: options.agent,
+      provider: provider.id,
+      model,
+      createdAt,
+      updatedAt: Date.now(),
+      messages,
+      usage,
+    });
+  };
+
+  const fetchModels = async (): Promise<string[]> => {
     try {
       return await listModels(provider, apiKey);
     } catch {
@@ -58,25 +175,23 @@ export function createSession(options: SessionOptions): Session {
     }
   };
 
-  const slash = async (name: string, args: string[], ui: SessionUi): Promise<'quit' | void> => {
+  const slash = async (name: string, args: string[], ui: SessionUi): Promise<void> => {
     switch (name) {
       case 'help':
         ui.line(slashHelp());
         return;
-      case 'quit':
-      case 'exit':
-        return 'quit';
       case 'status':
-        ui.line(`agent     ${options.agent}`);
+        ui.line(`session   ${sessionId}`);
         ui.line(`provider  ${provider.id} (${provider.format})`);
         ui.line(`model     ${model}`);
         ui.line(`key       ${apiKey ? 'set' : 'missing'}`);
-        ui.line(`tools     ${autoApprove ? 'auto-approve' : 'ask before write/shell'}`);
         ui.line(`messages  ${messages.length - 1}`);
+        ui.line(`tokens    ${usage.inputTokens} in / ${usage.outputTokens} out (${totalTokens(usage)} total)`);
+        ui.line(`tools     ${autoApprove ? 'auto-approve' : 'ask before write/shell'}`);
         return;
       case 'models': {
-        const models = await promptForModels();
-        ui.line(models.length ? models.join('\n') : '(provider returned no models)');
+        const list = await fetchModels();
+        ui.line(list.length ? list.join('\n') : '(provider returned no models)');
         return;
       }
       case 'model': {
@@ -124,7 +239,11 @@ export function createSession(options: SessionOptions): Session {
         return;
       case 'clear':
         messages = [system()];
+        persist();
         ui.line('conversation cleared');
+        return;
+      case 'resume':
+        ui.line('open the resume list: /resume');
         return;
       case 'context':
         ui.line(protocolText());
@@ -142,7 +261,7 @@ export function createSession(options: SessionOptions): Session {
       }
       case 'cost': {
         const row = loadPrices().find((entry) => entry.id === model || model.includes(entry.id));
-        if (row) ui.line(`${row.id}: $${cost(row, 2000, 800).toFixed(4)} for ~2k in + 800 out`);
+        if (row) ui.line(`${row.id}: $${cost(row, usage.inputTokens + 2000, 800).toFixed(4)}`);
         else ui.line(`no price for ${model}; cheapest small pick is ${cheapestFor('small').model.id}`);
         return;
       }
@@ -167,14 +286,6 @@ export function createSession(options: SessionOptions): Session {
         for (const row of rows) ui.line(`[${row.from} -> ${row.to}] ${row.type}: ${row.summary}`);
         return;
       }
-      case 'update': {
-        ui.line('updating baton ...');
-        const result = spawnSync('npm', ['install', '-g', 'baton@latest'], { encoding: 'utf8' });
-        const out = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
-        ui.line(out ? out.split('\n').slice(-3).join('\n') : 'no output');
-        ui.line(result.status === 0 ? 'updated — restart baton' : 'update failed (published to npm?)');
-        return;
-      }
       default:
         ui.line(`unknown command: /${name} (try /help)`);
     }
@@ -190,14 +301,59 @@ export function createSession(options: SessionOptions): Session {
   return {
     provider: () => provider,
     model: () => model,
+    sessionId: () => sessionId,
+    info: () => ({ id: sessionId, provider: provider.id, model, messages: messages.length - 1, usage }),
+    models: fetchModels,
+    setModel: (next: string) => {
+      model = next;
+    },
+    listSessions: () => listSessionRecords(),
+    deleteSession: (id: string) => deleteSessionRecord(id),
+    newSession: () => {
+      sessionId = newSessionId();
+      createdAt = Date.now();
+      usage = emptyUsage();
+      messages = [system()];
+      persist();
+    },
+    resume: (id: string): boolean => {
+      const record = readSessionRecord(id);
+      if (!record) return false;
+      sessionId = record.id;
+      createdAt = record.createdAt;
+      usage = record.usage ?? emptyUsage();
+      messages = record.messages.length ? record.messages : [system()];
+      if (record.model) model = record.model;
+      const found = getProvider(record.provider, loadConfig().customProviders);
+      if (found) {
+        provider = found;
+        apiKey = resolveKey(found);
+      }
+      return true;
+    },
+    exportSession: (format: ExportFormat, name: string): string => {
+      persist();
+      const record =
+        readSessionRecord(sessionId) ??
+        ({
+          id: sessionId,
+          agent: options.agent,
+          provider: provider.id,
+          model,
+          createdAt,
+          updatedAt: Date.now(),
+          messages,
+          usage,
+        } satisfies SessionRecord);
+      return writeExport(record, format, name);
+    },
     async handle(input: string, ui: SessionUi): Promise<void> {
       const trimmed = input.trim();
       if (!trimmed) return;
 
       const parsed = parseSlash(trimmed);
       if (parsed) {
-        const result = await slash(parsed.name, parsed.args, ui);
-        void result;
+        await slash(parsed.name, parsed.args, ui);
         return;
       }
 
@@ -221,9 +377,19 @@ export function createSession(options: SessionOptions): Session {
           },
         });
         messages = result.messages;
+        usage.inputTokens += result.usage.inputTokens;
+        usage.outputTokens += result.usage.outputTokens;
+        usage.requests += 1;
       } finally {
         stream.done();
+        persist();
       }
     },
   };
+}
+
+export function runUpdate(): { ok: boolean; output: string } {
+  const result = spawnSync('npm', ['install', '-g', 'baton@latest'], { encoding: 'utf8' });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+  return { ok: result.status === 0, output: output.split('\n').slice(-3).join('\n') };
 }
