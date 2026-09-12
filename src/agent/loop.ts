@@ -1,5 +1,5 @@
 import { streamChat } from '../providers/client.ts';
-import { TOOLS, runTool } from './tools.ts';
+import { TOOLS, READ_ONLY_TOOLS, runTool } from './tools.ts';
 import type { ToolContext } from './tools.ts';
 import type { ChatMessage, ToolCall } from '../providers/types.ts';
 import type { Provider } from '../providers/registry.ts';
@@ -18,6 +18,8 @@ export interface TurnOptions {
   cwd: string;
   tools?: boolean;
   confirm?: ToolContext['confirm'];
+  ask?: ToolContext['ask'];
+  readOnly?: boolean;
   maxTurns?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -62,7 +64,7 @@ export async function runTurn(
 }> {
   const maxTurns = options.maxTurns ?? 40;
   const events = options.events ?? {};
-  const tools = options.tools === false ? [] : TOOLS;
+  const tools = options.tools === false ? [] : options.readOnly ? READ_ONLY_TOOLS : TOOLS;
   const history = [...messages];
   const usage = { inputTokens: 0, outputTokens: 0 };
   let finalText = '';
@@ -102,7 +104,11 @@ export async function runTurn(
       } catch {
         args = {};
       }
-      const outcome = await runTool(call.name, args, { cwd: options.cwd, confirm: options.confirm });
+      const outcome = await runTool(call.name, args, {
+        cwd: options.cwd,
+        confirm: options.confirm,
+        ask: options.ask,
+      });
       events.onToolEnd?.(call, outcome.output, Boolean(outcome.isError));
       history.push({
         role: 'tool',

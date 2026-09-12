@@ -17,6 +17,7 @@ const { defaultConfig } = await import('../src/core/config.ts');
 const { tmuxBin, detectSplitters, userTmuxPath } = await import('../src/core/splitter.ts');
 const registry = await import('../src/providers/registry.ts');
 const { parseKeys } = await import('../src/ui/select.ts');
+const { READ_ONLY_TOOLS, TOOLS } = await import('../src/agent/tools.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -117,6 +118,17 @@ test('parseKeys handles coalesced and single key sequences', () => {
     { name: 'backspace' },
   ]);
   assert.deepEqual(parseKeys('\u001b[C'), []);
+});
+
+test('plan mode exposes only read-only tools', () => {
+  const readOnly = READ_ONLY_TOOLS.map((tool) => tool.name);
+  for (const blocked of ['write_file', 'edit_file', 'shell']) {
+    assert.ok(!readOnly.includes(blocked), `${blocked} must not be available in plan mode`);
+  }
+  for (const allowed of ['read_file', 'list_dir', 'glob', 'grep', 'ask_user']) {
+    assert.ok(readOnly.includes(allowed), `${allowed} should be available in plan mode`);
+  }
+  assert.ok(TOOLS.length > READ_ONLY_TOOLS.length);
 });
 
 test('provider registry: grouped, ordered, complete', () => {

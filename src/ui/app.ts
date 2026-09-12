@@ -65,6 +65,7 @@ export interface ChatUi {
   line(text: string, color?: string): void;
   setModel(model: string): void;
   clear(): void;
+  ask?(question: string, options: string[]): Promise<string>;
 }
 
 export interface ChatAppOptions {
@@ -79,6 +80,8 @@ type Command = { label: string; detail: string; group: string };
 
 const COMMANDS: Command[] = [
   { group: 'session', label: 'help', detail: 'show this list' },
+  { group: 'session', label: 'plan', detail: 'plan first — read-only, no changes' },
+  { group: 'session', label: 'build', detail: 'go back to build mode' },
   { group: 'session', label: 'new', detail: 'start a new session' },
   { group: 'session', label: 'sessions', detail: 'switch session' },
   { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
@@ -153,7 +156,8 @@ type Mode =
   | 'export'
   | 'file'
   | 'info'
-  | 'custom-format';
+  | 'custom-format'
+  | 'question';
 
 function visibleLength(text: string): number {
   return text.replace(/\u001b\[[0-9;]*m/g, '').length;
@@ -336,7 +340,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
   const setFooter = (extra?: string): void => {
     const info = session.info();
-    footer.content = `${options.agent}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
+    footer.content = `${options.agent}  ·  ${session.mode().toUpperCase()}  ·  ${info.id}  ·  ${info.messages} msgs  ·  ${formatTokens(
       totalTokens(info.usage),
     )} tokens${extra ? `  ·  ${extra}` : ''}`;
   };
@@ -395,6 +399,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     clear() {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
     },
+    ask: (question: string, options: string[]) => openQuestion(question, options),
   };
 
   const run = (command: string): string =>
@@ -414,8 +419,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   let paletteHandledAt = 0;
   const WINDOW = 12;
 
-  type InputPurpose = 'key' | 'custom-name' | 'custom-url' | 'custom-key';
+  type InputPurpose = 'key' | 'custom-name' | 'custom-url' | 'custom-key' | 'ask';
   let inputPurpose: InputPurpose | null = null;
+  let askResolver: ((answer: string) => void) | null = null;
+  let askQuestion = '';
   const draft = { id: '', name: '', baseUrl: '', format: 'openai' as 'openai' | 'anthropic' };
 
   const closeModal = (): void => {
@@ -716,6 +723,29 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     input.focus();
   };
 
+  const openQuestion = (question: string, options: string[]): Promise<string> => {
+    askQuestion = question;
+    mode = 'question';
+    title = clip(question, 64);
+    modalFooter = '↑/↓ move   ·   enter select   ·   esc skip';
+    rows = [
+      ...options.slice(0, 4).map((option, i) => ({
+        kind: 'item' as const,
+        label: option,
+        detail: i === 0 ? 'Recommended' : '',
+        value: option,
+      })),
+      { kind: 'blank', label: '' },
+      { kind: 'item', label: 'Type something…', value: '__type' },
+    ];
+    index = 0;
+    offset = 0;
+    drawModal();
+    return new Promise((resolve) => {
+      askResolver = resolve;
+    });
+  };
+
   const openCustomFormat = (): void => {
     mode = 'custom-format';
     title = 'Custom provider — format';
@@ -763,7 +793,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       else if (command === 'export') openExport();
       else if (command === 'files') openFiles();
       else if (['key', 'remember', 'send'].includes(command)) input.value = `/${command} `;
-      else void dispatch(command);
+      else void dispatch(`/${command}`);
       input.focus();
       return;
     }
@@ -790,6 +820,21 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       ui.line(`provider → ${provider.name}`, theme.user);
       closeModal();
       void openModels();
+      return;
+    }
+
+    if (mode === 'question') {
+      const resolve = askResolver;
+      askResolver = null;
+      if (row.value === '__type') {
+        closeModal();
+        beginInput('ask', clip(askQuestion, 44), 'type your answer');
+        askResolver = resolve;
+        return;
+      }
+      closeModal();
+      resolve?.(String(row.value));
+      input.focus();
       return;
     }
 
@@ -900,7 +945,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   const dispatch = async (line: string): Promise<void> => {
-    const trimmed = line.trim().replace(/^\//, '');
+    const raw = line.trim();
+    if (!raw.startsWith('/')) {
+      await session.handle(line, ui);
+      return;
+    }
+    const trimmed = raw.slice(1);
     const [name, ...args] = trimmed.split(/\s+/);
 
     if (name === 'quit' || name === 'exit') {
@@ -919,6 +969,18 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (name === 'debug') return openInfo('Debug', infoDebug());
     if (name === 'context') {
       return openInfo('Context', [...protocolText().split('\n'), ...memoryBlock().split('\n')].slice(0, 30));
+    }
+    if (name === 'plan') {
+      session.setMode('plan');
+      setFooter();
+      ui.line('plan mode — read-only. Ask for a plan, then I will offer to build it.', theme.tool);
+      return;
+    }
+    if (name === 'build') {
+      session.setMode('build');
+      setFooter();
+      ui.line('build mode', theme.user);
+      return;
     }
     if (name === 'init') return initAgents();
     if (name === 'theme') return openThemes();
@@ -1125,6 +1187,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         finishCustom(answer);
         return;
       }
+      if (purpose === 'ask') {
+        const resolve = askResolver;
+        askResolver = null;
+        endInput();
+        resolve?.(answer || '(no answer)');
+        return;
+      }
       endInput();
       return;
     }
@@ -1132,6 +1201,20 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (!value.trim()) return;
     closeModal();
     void dispatch(value)
+      .then(async () => {
+        if (session.mode() === 'plan' && !inputPurpose) {
+          const answer = await openQuestion('Ready to build this plan?', [
+            'Yes — switch to build mode (Recommended)',
+            'Keep planning',
+          ]);
+          if (/^yes/i.test(answer)) {
+            session.setMode('build');
+            ui.line('→ build mode', theme.user);
+          }
+          setFooter();
+          input.focus();
+        }
+      })
       .catch((error: unknown) => {
         ui.line(`error: ${error instanceof Error ? error.message : 'request failed'}`, theme.error);
       })

@@ -443,6 +443,11 @@ function startDaemonDetached(): void {
 
 async function cmdUp(flags: Flags): Promise<void> {
   const config = loadConfig();
+  if (bool(flags, 'yes') && config.autoApprove !== true) {
+    config.autoApprove = true;
+    saveConfig(config);
+    console.log('auto-approve on — agents will not ask before writing or running things');
+  }
   const plan = buildUpPlan(config);
 
   if (bool(flags, 'dry-run')) {

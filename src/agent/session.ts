@@ -35,7 +35,10 @@ export interface SessionUi {
   assistant(): StreamHandle;
   line(text: string, color?: string): void;
   setModel?(model: string): void;
+  ask?(question: string, options: string[]): Promise<string>;
 }
+
+export type AgentMode = 'build' | 'plan';
 
 export interface SessionOptions {
   agent: string;
@@ -66,6 +69,8 @@ export interface Session {
   models(): Promise<string[]>;
   setModel(model: string): void;
   setProvider(id: string): boolean;
+  mode(): AgentMode;
+  setMode(mode: AgentMode): void;
   listSessions(): SessionRecord[];
   resume(id: string): boolean;
   newSession(): void;
@@ -128,10 +133,18 @@ export function createSession(options: SessionOptions): Session {
   let model = options.model;
   let apiKey = options.apiKey ?? resolveKey(provider);
   let autoApprove = options.autoApprove;
+  let agentMode: AgentMode = 'build';
 
   const system = (): ChatMessage => ({
     role: 'system',
-    content: buildSystemPrompt(options.cwd, `${protocolText()}\n${memoryBlock()}`),
+    content: buildSystemPrompt(
+      options.cwd,
+      `${
+        agentMode === 'plan'
+          ? 'You are in PLAN mode. Explore the project and produce a concrete, step-by-step plan. You cannot write, edit or run anything in this mode — do not try.'
+          : 'You are in BUILD mode. You can read, write and run things (with the user\'s permission).'
+      }\n${protocolText()}\n${memoryBlock()}`,
+    ),
   });
 
   let sessionId = options.session ?? newSessionId();
@@ -315,6 +328,11 @@ export function createSession(options: SessionOptions): Session {
       apiKey = resolveKey(next);
       return true;
     },
+    mode: () => agentMode,
+    setMode: (next: AgentMode) => {
+      agentMode = next;
+      if (messages.length > 0 && messages[0].role === 'system') messages[0] = system();
+    },
     listSessions: () => listSessionRecords(),
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
@@ -375,6 +393,8 @@ export function createSession(options: SessionOptions): Session {
           model,
           cwd: options.cwd,
           confirm: confirmTool,
+          ask: ui.ask ? (question, choices) => ui.ask!(question, choices) : undefined,
+          readOnly: agentMode === 'plan',
           events: {
             onText: (chunk) => stream.append(chunk),
             onToolStart: (call) => ui.line(`-> ${call.name}`, '#e0b070'),

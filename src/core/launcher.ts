@@ -22,15 +22,16 @@ export interface StartedAgent {
 
 const PIDS_PATH = join(AGENTS_DIR, 'pids.json');
 
-function batonAgentArgs(agent: AgentConfig): string[] {
+function batonAgentArgs(agent: AgentConfig, autoApprove = false): string[] {
   const args = ['chat', '--agent', agent.name];
   if (agent.provider) args.push('--provider', agent.provider);
   if (agent.model) args.push('--model', agent.model);
+  if (autoApprove) args.push('--yes');
   return args;
 }
 
-function batonAgentCommand(agent: AgentConfig): string {
-  return `${process.execPath} ${process.argv[1]} ${batonAgentArgs(agent).join(' ')}`;
+function batonAgentCommand(agent: AgentConfig, autoApprove = false): string {
+  return `${process.execPath} ${process.argv[1]} ${batonAgentArgs(agent, autoApprove).join(' ')}`;
 }
 
 function externalAgentCommand(agent: AgentConfig): string {
@@ -38,8 +39,8 @@ function externalAgentCommand(agent: AgentConfig): string {
   return `${agent.command}${model}`;
 }
 
-function paneCommand(agent: AgentConfig): string {
-  if (!agent.command) return `BATON_AGENT=${agent.name} ${batonAgentCommand(agent)}`;
+function paneCommand(agent: AgentConfig, autoApprove = false): string {
+  if (!agent.command) return `BATON_AGENT=${agent.name} ${batonAgentCommand(agent, autoApprove)}`;
   return `BATON_AGENT=${agent.name} ${externalAgentCommand(agent)}`;
 }
 
@@ -70,9 +71,11 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
 
   if (splitter.name === 'tmux' && agents.length > 0) {
     const tmux = tmuxBin();
-    const commands = [`${tmux} new-session -d -s baton -n ${agents[0].name} '${paneCommand(agents[0])}'`];
+    const commands = [
+      `${tmux} new-session -d -s baton -n ${agents[0].name} '${paneCommand(agents[0], config.autoApprove)}'`,
+    ];
     for (const agent of agents.slice(1)) {
-      commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent)}'`);
+      commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent, config.autoApprove)}'`);
     }
     commands.push(`${tmux} set-option -t baton status off`);
     commands.push(`${tmux} set-option -t baton mouse on`);
@@ -112,7 +115,7 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
   return {
     splitter: 'pty',
     commands: agents.map(
-      (agent) => `${paneCommand(agent)}  # logs -> ${join(AGENTS_DIR, agent.name + '.log')}`,
+      (agent) => `${paneCommand(agent, config.autoApprove)}  # logs -> ${join(AGENTS_DIR, agent.name + '.log')}`,
     ),
     note: `background agents (${platform()}) — logs in ~/.baton/agents`,
     background: true,
@@ -174,7 +177,7 @@ export function ensurePanes(config: BatonConfig): { added: number; panes: number
   let added = 0;
   while (panes < wanted) {
     const agent = config.agents[panes];
-    const command = paneCommand(agent);
+    const command = paneCommand(agent, config.autoApprove);
     const split = spawnSync(tmuxBin(), ['split-window', '-h', '-t', 'baton', command], { encoding: 'utf8' });
     if (split.error || split.status !== 0) break;
     added++;
@@ -205,7 +208,7 @@ export function spawnBackground(config: BatonConfig): StartedAgent[] {
           shell: true,
           env,
         })
-      : spawn(process.execPath, [process.argv[1] as string, ...batonAgentArgs(agent)], {
+      : spawn(process.execPath, [process.argv[1] as string, ...batonAgentArgs(agent, config.autoApprove)], {
           detached: true,
           stdio: ['ignore', fd, fd],
           env,

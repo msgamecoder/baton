@@ -6,6 +6,7 @@ import type { ToolSpec, ToolResult } from '../providers/types.ts';
 export interface ToolContext {
   cwd: string;
   confirm?: (name: string, args: Record<string, unknown>) => Promise<boolean>;
+  ask?: (question: string, options: string[]) => Promise<string>;
 }
 
 const MAX_OUTPUT = 20000;
@@ -72,6 +73,19 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: 'ask_user',
+    description:
+      'Ask the user to choose between options when you are unsure, instead of guessing. Give 2-4 short options; the first is presented as the recommendation. The user can also type their own answer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'the question to ask' },
+        options: { type: 'array', items: { type: 'string' }, description: '2-4 choices' },
+      },
+      required: ['question', 'options'],
+    },
+  },
+  {
     name: 'shell',
     description: 'Run a shell command in the project directory and return its output.',
     parameters: {
@@ -135,6 +149,9 @@ function walk(root: string, limit = MAX_WALK): string[] {
   }
   return found;
 }
+
+const WRITE_TOOLS = ['write_file', 'edit_file', 'shell'];
+export const READ_ONLY_TOOLS: ToolSpec[] = TOOLS.filter((tool) => !WRITE_TOOLS.includes(tool.name));
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
   try {
@@ -225,6 +242,13 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
           if (hits.length >= 200) break;
         }
         return { output: hits.length ? truncate(hits.join('\n')) : 'no matches' };
+      }
+      case 'ask_user': {
+        const question = String(args.question ?? '');
+        const options = Array.isArray(args.options) ? (args.options as string[]).slice(0, 4) : [];
+        if (!ctx.ask) return { output: 'asking is not available in this mode', isError: true };
+        const answer = await ctx.ask(question, options);
+        return { output: `the user answered: ${answer}` };
       }
       case 'shell': {
         if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
