@@ -66,6 +66,7 @@ export interface ChatUi {
   user(text: string): void;
   assistant(): { set(text: string): void; append(chunk: string): void; done(): void };
   line(text: string, color?: string): void;
+  wrap(text: string, color?: string): void;
   setModel(model: string): void;
   clear(): void;
   ask?(question: string, options: string[]): Promise<string>;
@@ -75,6 +76,7 @@ export interface ChatAppOptions {
   session: Session;
   agent: string;
   providerName: string;
+  version: string;
   model: string;
   cwd: string;
 }
@@ -281,7 +283,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   header.add(new ASCIIFontRenderable(renderer, { id: 'wordmark', text: 'BATON', font: 'tiny', color: theme.accent }));
   const subtitle = new TextRenderable(renderer, {
     id: 'subtitle',
-    content: `${options.providerName}   ·   ${options.model}`,
+    content: `${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
     fg: theme.dim,
   });
   header.add(subtitle);
@@ -491,6 +493,19 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         },
       };
     },
+    wrap(text, color) {
+      segmentBreak = true;
+      for (const row of text.split('\n')) {
+        addNode(
+          new TextRenderable(renderer, {
+            content: row,
+            fg: color ?? theme.text,
+            wrapMode: 'word',
+            flexShrink: 0,
+          }),
+        );
+      }
+    },
     line(text, color) {
       segmentBreak = true;
       const rows = text.split('\n');
@@ -512,7 +527,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
     },
     setModel(model) {
-      subtitle.content = `${options.providerName}   ·   ${model}`;
+      subtitle.content = `${options.providerName}   ·   ${model}   ·   v${options.version}`;
     },
     clear() {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
@@ -1597,7 +1612,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         }
       })
       .catch((error: unknown) => {
-        ui.line(`error: ${error instanceof Error ? error.message : 'request failed'}`, theme.error);
+        const message = error instanceof Error ? error.message : 'request failed';
+        ui.wrap(`error: ${message}`, theme.error);
+        ui.wrap(
+          'Type "continue" to try again. If the issue persists, open an issue: https://github.com/mxgamecoder/baton/issues',
+          theme.dim,
+        );
       })
       .finally(() => {
         const elapsed = turnStarted ? (Date.now() - turnStarted) / 1000 : 0;

@@ -444,10 +444,16 @@ function startDaemonDetached(): void {
 
 async function cmdUp(flags: Flags): Promise<void> {
   const config = loadConfig();
-  if (bool(flags, 'yes') && config.autoApprove !== true) {
+  const wantApprove = !bool(flags, 'ask');
+  if (wantApprove && config.autoApprove !== true) {
     config.autoApprove = true;
     saveConfig(config);
-    console.log('auto-approve on — agents will not ask before writing or running things');
+    console.log('agents have full permission by default — they will not ask before writing or running things');
+    console.log('(use `baton --ask` to make them ask again)');
+  } else if (!wantApprove && config.autoApprove === true) {
+    config.autoApprove = false;
+    saveConfig(config);
+    console.log('auto-approve off — agents will ask before writing or running things');
   }
   const plan = buildUpPlan(config);
 
@@ -1003,6 +1009,7 @@ async function cmdChat(flags: Flags): Promise<void> {
         session,
         agent: context.agent,
         providerName: context.provider.name,
+        version: version(),
         model: context.model,
         cwd,
       });
@@ -1256,8 +1263,9 @@ function usage(): void {
 usage: baton <command> [options]
 
 run \`baton\` with no command: it sets up (config + terminal check), installs what is
-missing, then launches the daemon and your agents. Re-running it attaches instead of
-starting a second copy. Use --no-start to set up only, or --yes to skip the prompts.
+missing, then launches the daemon and your agents with full permission (they do not ask
+before writing or running things — pass --ask to turn that off). Re-running it attaches
+instead of starting a second copy. Use --no-start to set up only.
 
 setup
   doctor [--install]         check node/splitter setup, optionally install one

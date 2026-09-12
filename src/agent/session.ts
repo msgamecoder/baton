@@ -621,14 +621,18 @@ export function runUpdate(): { ok: boolean; output: string } {
     }
   })();
 
-  const published = spawnSync('npm', ['install', '-g', 'baton@latest', '--no-fund', '--no-audit'], {
-    encoding: 'utf8',
-  });
-  if (published.status === 0) {
+  const repo = 'github:mxgamecoder/baton';
+
+  const fromGithub = spawnSync('npm', ['install', '-g', repo, '--no-fund', '--no-audit'], { encoding: 'utf8' });
+  if (fromGithub.status === 0) {
     const check = spawnSync('which', ['baton'], { encoding: 'utf8' });
     if (check.status === 0) {
-      return { ok: true, output: 'installed from npm' };
+      return { ok: true, output: `installed from ${repo}` };
     }
+  }
+
+  if (sourceDir && existsSync(join(sourceDir, '.git'))) {
+    spawnSync('git', ['-C', sourceDir, 'pull', '--ff-only'], { encoding: 'utf8' });
   }
 
   if (sourceDir && existsSync(join(sourceDir, 'package.json'))) {
