@@ -5,3 +5,6 @@ dist/
 
 # command code working files
 .commandcode/
+session-*.md
+session-*.html
+session-*.json
