@@ -1012,6 +1012,7 @@ async function cmdChat(flags: Flags): Promise<void> {
         version: version(),
         model: context.model,
         cwd,
+        resume: str(flags, 'session'),
       });
       return;
     } catch (error) {
@@ -1462,6 +1463,10 @@ async function main(): Promise<void> {
       console.log(`baton v${version()}`);
       break;
     default:
+      if (/^[a-z0-9][a-z0-9-]{3,}$/i.test(command) && existsSync(join(BATON_HOME, 'chats', `${command}.json`))) {
+        await cmdChat({ session: command } as Flags);
+        break;
+      }
       console.error(`unknown command: ${command}`);
       usage();
       process.exitCode = 1;

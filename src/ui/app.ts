@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   ASCIIFontRenderable,
@@ -81,6 +81,7 @@ export interface ChatAppOptions {
   version: string;
   model: string;
   cwd: string;
+  resume?: string;
 }
 
 type Command = { label: string; detail: string; group: string };
@@ -407,6 +408,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   let thinkingOn = true;
   let thinkingTimer: ReturnType<typeof setInterval> | null = null;
   let turnStarted = 0;
+  let totalThinking = 0;
+  const startedAt = Date.now();
   let lastCopiedAt = 0;
   const THINK_WORDS = [
     'thinking',
@@ -1585,6 +1588,31 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     } catch {
       /* renderer already gone */
     }
+    try {
+      const info = session.info();
+      const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      const spent = Math.round(totalThinking);
+      const human = (n: number): string =>
+        n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)}m ${n % 60}s` : `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m`;
+      writeSync(
+        1,
+        [
+          '',
+          `thanks — that was a good session with baton ${options.version}`,
+          '',
+          `  agent      ${options.agent}`,
+          `  session    ${info.id}`,
+          `  messages   ${info.messages}`,
+          `  tokens     ${formatTokens(totalTokens(info.usage))}`,
+          `  time       ${human(seconds)}  (${human(spent)} of it the agent working)`,
+          '',
+          `come back with:  baton ${info.id}`,
+          '',
+        ].join('\n'),
+      );
+    } catch {
+      /* summary is best effort */
+    }
     process.exit(0);
   };
 
@@ -1777,6 +1805,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         const elapsed = turnStarted ? (Date.now() - turnStarted) / 1000 : 0;
         stopThinking();
         if (thinkingOn && elapsed > 0.4) ui.line(`· ${elapsed.toFixed(1)}s`, theme.dim);
+        totalThinking += elapsed;
         busy = false;
         assertTitle();
         setFooter();
@@ -1865,6 +1894,32 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       input.focus();
     }
   };
+
+  if (options.resume && session.resume(options.resume)) {
+    for (const message of session.history()) {
+      const text = typeof message.content === 'string' ? message.content : '';
+      if (message.role === 'user') {
+        ui.user(text);
+      } else if (message.role === 'tool') {
+        ui.line(`   └ ${text.split('\n')[0].slice(0, 120)}`, '#565672');
+      } else if (message.role === 'assistant') {
+        for (const call of message.toolCalls ?? []) {
+          const label = session.toolLabel(call);
+          ui.line(label.text, label.color);
+        }
+        if (text.startsWith('[request failed]')) {
+          ui.wrap(text, theme.error);
+        } else if (text) {
+          const turn = ui.assistant();
+          turn.set(text);
+          turn.done();
+        }
+      }
+    }
+    ui.setModel(session.model());
+    ui.line(`resumed ${session.title()}`, theme.dim);
+    setFooter();
+  }
 
   const relayTimer = setInterval(() => void pollRelay(), 4000);
   relayTimer.unref?.();
