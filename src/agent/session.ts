@@ -79,6 +79,7 @@ export interface Session {
   mode(): AgentMode;
   setMode(mode: AgentMode): void;
   oneShot(prompt: string): Promise<string>;
+  compact(): Promise<{ before: number; after: number; summary: string }>;
   listSessions(): SessionRecord[];
   resume(id: string): boolean;
   newSession(): void;
@@ -330,6 +331,53 @@ export function createSession(options: SessionOptions): Session {
     return confirm(`run ${toolName} ${String(detail).slice(0, 80)}? [y/N] `);
   };
 
+  const compact = async (): Promise<{ before: number; after: number; summary: string }> => {
+    const history = messages.filter((message) => message.role !== 'system');
+    const before = history.length;
+    if (before <= 6) return { before, after: before, summary: 'nothing to compact yet' };
+
+    const keep = history.slice(-4);
+    const older = history.slice(0, -4);
+    const transcript = older
+      .map((message) => `${message.role}: ${typeof message.content === 'string' ? message.content : ''}`)
+      .join('\n')
+      .slice(0, 60_000);
+
+    const summary = await runTurn(
+      [
+        { role: 'system', content: 'You compress conversations. Reply with a dense factual summary only.' },
+        {
+          role: 'user',
+          content: `Summarise this conversation so work can continue without it. Keep decisions, file paths, findings and open questions. Be terse.\n\n${transcript}`,
+        },
+      ],
+      {
+        provider,
+        apiKey,
+        model,
+        cwd: options.cwd,
+        tools: false,
+        readOnly: true,
+        maxTurns: 1,
+        events: {},
+      },
+    );
+
+    messages = [
+      system(),
+      { role: 'user', content: `[summary of the earlier conversation]\n${summary.finalText}` },
+      { role: 'assistant', content: 'Understood — continuing from that summary.' },
+      ...keep,
+    ];
+    usage.inputTokens += summary.usage.inputTokens;
+    usage.outputTokens += summary.usage.outputTokens;
+    persist();
+    return { before, after: messages.length - 1, summary: summary.finalText };
+  };
+
+  const historySize = (): number =>
+    messages.reduce((total, message) => total + (typeof message.content === 'string' ? message.content.length : 0), 0);
+
   return {
     provider: () => provider,
     model: () => model,
@@ -375,6 +423,7 @@ export function createSession(options: SessionOptions): Session {
       persist();
       return result.finalText;
     },
+    compact,
     listSessions: () => listSessionRecords(),
     deleteSession: (id: string) => deleteSessionRecord(id),
     newSession: () => {
@@ -442,6 +491,14 @@ export function createSession(options: SessionOptions): Session {
       ui.user(trimmed);
       messages.push({ role: 'user', content: trimmed });
       messages = trimHistory(messages);
+      if (historySize() > 60_000) {
+        try {
+          const result = await compact();
+          ui.line(`auto-compacted ${result.before} → ${result.after} messages`, '#e0b070');
+        } catch {
+          /* keep going even if compaction fails */
+        }
+      }
       const stream = ui.assistant();
       try {
         const result = await runTurn(messages, {

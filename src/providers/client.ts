@@ -1,5 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import type { Provider } from '../providers/registry.ts';
 import type { ChatMessage, ToolCall, ToolSpec } from './types.ts';
+
+const CLIENT_SESSION_ID = randomUUID();
+
+export function providerHeaders(provider: Provider, apiKey?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (provider.format === 'anthropic') {
+    if (apiKey) headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+  } else if (apiKey) {
+    headers.authorization = `Bearer ${apiKey}`;
+  }
+  if (provider.sessionHeader) headers[provider.sessionHeader] = CLIENT_SESSION_ID;
+  return headers;
+}
 
 export interface StreamResult {
   text: string;
@@ -161,12 +176,14 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
   const url = `${provider.baseUrl}${provider.chatPath}`;
   const state = newStreamState();
 
-  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'text/event-stream' };
+  const headers: Record<string, string> = {
+    ...providerHeaders(provider, apiKey),
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+  };
   let body: unknown;
 
   if (provider.format === 'anthropic') {
-    if (apiKey) headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
     body = {
       model,
@@ -179,7 +196,6 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
       ...(tools.length ? { tools: toAnthropicTools(tools) } : {}),
     };
   } else {
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     body = {
       model,
       stream: true,
@@ -226,12 +242,7 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
 }
 
 export async function listModels(provider: Provider, apiKey?: string): Promise<string[]> {
-  const headers: Record<string, string> = {};
-  if (apiKey) {
-    if (provider.format === 'anthropic') headers['x-api-key'] = apiKey;
-    else headers.authorization = `Bearer ${apiKey}`;
-  }
-  if (provider.format === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+  const headers = providerHeaders(provider, apiKey);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);

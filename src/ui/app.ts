@@ -85,6 +85,7 @@ const COMMANDS: Command[] = [
   { group: 'session', label: 'build', detail: 'go back to build mode' },
   { group: 'session', label: 'new', detail: 'start a new session' },
   { group: 'session', label: 'sessions', detail: 'switch session' },
+  { group: 'session', label: 'compact', detail: 'summarise the conversation to free context' },
   { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
   { group: 'session', label: 'clear', detail: 'forget this conversation' },
   { group: 'session', label: 'quit', detail: 'exit' },
@@ -104,6 +105,7 @@ const COMMANDS: Command[] = [
   { group: 'baton', label: 'status', detail: 'provider, model, session, tokens' },
   { group: 'baton', label: 'debug', detail: 'paths, versions, config' },
   { group: 'baton', label: 'update', detail: 'update baton and restart' },
+  { group: 'baton', label: 'thinking', detail: 'show or hide the thinking indicator' },
   { group: 'baton', label: 'yes', detail: 'toggle auto-approve for tools' },
   { group: 'baton', label: 'memory', detail: 'what baton remembers about you' },
   { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
@@ -343,6 +345,46 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     scroll.scrollTo({ x: 0, y: scroll.scrollHeight });
   };
 
+  let thinkingOn = false;
+  let thinkingNode: TextRenderable | null = null;
+  let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+  let turnStarted = 0;
+  let lastCopiedAt = 0;
+  const THINK_WORDS = [
+    'thinking',
+    'coding',
+    'pondering',
+    'noodling',
+    'reasoning',
+    'brewing',
+    'working',
+    'mulling',
+    'tinkering',
+    'scheming',
+  ];
+
+  const stopThinking = (): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    if (thinkingNode) {
+      thinkingNode.destroyRecursively();
+      thinkingNode = null;
+    }
+  };
+
+  const startThinking = (): void => {
+    stopThinking();
+    turnStarted = Date.now();
+    if (!thinkingOn) return;
+    const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
+    thinkingNode = new TextRenderable(renderer, { content: `${word}… 0.0s`, fg: theme.dim, height: 1, flexShrink: 0 });
+    addNode(thinkingNode);
+    thinkingTimer = setInterval(() => {
+      if (!thinkingNode) return;
+      thinkingNode.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s`;
+    }, 200);
+  };
+
   const setFooter = (extra?: string): void => {
     const info = session.info();
     const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
@@ -381,10 +423,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       };
       return {
         set(text) {
+          stopThinking();
           buffer = text;
           paint();
         },
         append(chunk) {
+          stopThinking();
           buffer += chunk;
           paint();
         },
@@ -454,8 +498,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       Math.max(12, ...body.filter((row) => row.kind === 'item').map((row) => visibleLength(row.label))),
     );
 
-    const row = (content: string, fg: string): TextRenderable =>
-      new TextRenderable(renderer, { content, fg, height: 1, flexShrink: 0, truncate: true });
+    const row = (content: string, fg: string, wrap = false): TextRenderable =>
+      new TextRenderable(renderer, {
+        content,
+        fg,
+        flexShrink: 0,
+        ...(wrap ? { wrapMode: 'word' as const } : { height: 1, truncate: true }),
+      });
 
     const searchable = mode !== 'info';
     dialog.add(row(searchable ? `Search   ${query}`.trimEnd() : ' ', theme.accent));
@@ -478,7 +527,13 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       const check = entry.checked ? '✓' : ' ';
       const label = clip(entry.label, labelWidth);
       const detail = entry.detail ? `  ${clip(entry.detail, 60)}` : '';
-      dialog.add(row(`${marker} ${check}  ${pad(label, labelWidth)}${detail}`, selected ? theme.pick : theme.text));
+      dialog.add(
+        row(
+          mode === 'info' ? entry.label : `${marker} ${check}  ${pad(label, labelWidth)}${detail}`,
+          selected ? theme.pick : theme.text,
+          mode === 'info',
+        ),
+      );
     }
 
     dialog.add(row('', theme.dim));
@@ -756,6 +811,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     });
   };
 
+  const openMarkdown = (modalTitle: string, text: string): void => {
+    mode = 'info';
+    title = modalTitle;
+    modalFooter = 'esc close';
+    rows = [];
+    for (const child of dialog.getChildren()) child.destroyRecursively();
+    dialog.title = ` ${title} `;
+    if (syntax) {
+      dialog.add(new MarkdownRenderable(renderer, { content: text, syntaxStyle: syntax, fg: theme.text, flexShrink: 0 }));
+    } else {
+      dialog.add(new TextRenderable(renderer, { content: text, fg: theme.text, wrapMode: 'word', flexShrink: 0 }));
+    }
+    dialog.add(new TextRenderable(renderer, { content: '', fg: theme.dim, height: 1, flexShrink: 0 }));
+    dialog.add(new TextRenderable(renderer, { content: modalFooter, fg: theme.dim, height: 1, flexShrink: 0 }));
+    overlay.visible = true;
+  };
+
   const openCustomFormat = (): void => {
     mode = 'custom-format';
     title = 'Custom provider — format';
@@ -1018,17 +1090,36 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       return;
     }
     if (name === 'help') {
-      openInfo(
+      const width = Math.max(...COMMANDS.map((command) => command.label.length)) + 3;
+      return openInfo(
         'Commands',
-        COMMANDS.map((command) => `/${command.label}   ${command.detail}`),
+        COMMANDS.map((command) => `${command.label.padEnd(width)}${command.detail}`),
       );
-      return;
     }
     if (name === 'status') return openInfo('Status', infoStatus());
     if (name === 'cost') return openInfo('Cost', infoCost());
     if (name === 'debug') return openInfo('Debug', infoDebug());
     if (name === 'context') {
-      return openInfo('Context', [...protocolText().split('\n'), ...memoryBlock().split('\n')].slice(0, 30));
+      return openMarkdown('Context', `${protocolText()}\n${memoryBlock()}`);
+    }
+    if (name === 'compact') {
+      ui.line('compacting…', theme.dim);
+      try {
+        const result = await session.compact();
+        ui.line(`compacted ${result.before} → ${result.after} messages`, theme.user);
+      } catch (error) {
+        ui.line(`compact failed: ${error instanceof Error ? error.message : 'error'}`, theme.error);
+      }
+      setFooter();
+      return;
+    }
+    if (name === 'thinking') {
+      thinkingOn = !thinkingOn;
+      ui.line(
+        thinkingOn ? 'thinking on — the indicator and its timing will show' : 'thinking off',
+        thinkingOn ? theme.user : theme.dim,
+      );
+      return;
     }
     if (name === 'memory') return openInfo('Memory', memoryLines());
     if (name === 'tasks') return openInfo('Tasks', formatTaskList(session.info().id));
@@ -1292,6 +1383,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
 
     if (!value.trim()) return;
     closeModal();
+    startThinking();
     void dispatch(value)
       .then(async () => {
         if (session.mode() === 'plan' && !inputPurpose) {
@@ -1311,9 +1403,25 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         ui.line(`error: ${error instanceof Error ? error.message : 'request failed'}`, theme.error);
       })
       .finally(() => {
+        const elapsed = turnStarted ? (Date.now() - turnStarted) / 1000 : 0;
+        stopThinking();
+        if (thinkingOn && elapsed > 0.4) ui.line(`· ${elapsed.toFixed(1)}s`, theme.dim);
         setFooter();
         input.focus();
       });
+  });
+
+  renderer.on('selection' as never, () => {
+    try {
+      const text = (renderer as unknown as { getSelectedText?: () => string }).getSelectedText?.();
+      if (!text || !text.trim()) return;
+      if (Date.now() - lastCopiedAt < 800) return;
+      lastCopiedAt = Date.now();
+      copyToClipboard(text);
+      ui.line('copied', theme.user);
+    } catch {
+      /* selection copy is best effort */
+    }
   });
 
   const TIPS = [

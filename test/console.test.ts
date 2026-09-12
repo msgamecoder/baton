@@ -19,6 +19,7 @@ const registry = await import('../src/providers/registry.ts');
 const { parseKeys } = await import('../src/ui/select.ts');
 const { READ_ONLY_TOOLS, TOOLS } = await import('../src/agent/tools.ts');
 const memory = await import('../src/core/memory.ts');
+const { providerHeaders } = await import('../src/providers/client.ts');
 
 test('parseSlash reads commands and args', () => {
   assert.deepEqual(parseSlash('/model oc deepseek-chat'), { name: 'model', args: ['oc', 'deepseek-chat'] });
@@ -158,6 +159,21 @@ test('memory instructions are recognised', () => {
   assert.equal(memory.isMemoryInstruction('save my name is bob to memory'), true);
   assert.equal(memory.isMemoryInstruction("don't forget I use pnpm"), true);
   assert.equal(memory.isMemoryInstruction('build the login page'), false);
+});
+
+test('opencode go gets the session header it requires', () => {
+  const go = registry.getProvider('opencode-go');
+  assert.ok(go?.sessionHeader === 'x-opencode-session');
+  const headers = providerHeaders(go!, 'sk-x');
+  assert.equal(headers.authorization, 'Bearer sk-x');
+  assert.equal(typeof headers['x-opencode-session'], 'string');
+  assert.ok(String(headers['x-opencode-session']).length > 10, 'a real session id must be sent');
+
+  const anthropic = registry.getProvider('anthropic');
+  const anthropicHeaders = providerHeaders(anthropic!, 'sk-y');
+  assert.equal(anthropicHeaders['x-api-key'], 'sk-y');
+  assert.equal(anthropicHeaders['anthropic-version'], '2023-06-01');
+  assert.equal(anthropicHeaders['x-opencode-session'], undefined);
 });
 
 test('provider registry: grouped, ordered, complete', () => {

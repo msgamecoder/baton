@@ -15,6 +15,8 @@ export interface Provider {
   keyUrl?: string;
   defaultModels: string[];
   note?: string;
+  /** header the provider needs to route a request, e.g. OpenCode Go's session header */
+  sessionHeader?: string;
 }
 
 export const PROVIDERS: Provider[] = [
@@ -56,6 +58,8 @@ export const PROVIDERS: Provider[] = [
     keyEnv: 'OPENCODE_GO_API_KEY',
     keyUrl: 'https://opencode.ai/auth',
     defaultModels: [],
+    note: 'requests must carry an x-opencode-session header',
+    sessionHeader: 'x-opencode-session',
   },
   {
     id: 'anthropic',
