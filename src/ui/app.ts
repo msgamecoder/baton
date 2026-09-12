@@ -68,6 +68,7 @@ export interface ChatUi {
   line(text: string, color?: string): void;
   wrap(text: string, color?: string): void;
   markdown(text: string, color?: string): void;
+  recordTool?(title: string, output: string): void;
   setModel(model: string): void;
   clear(): void;
   ask?(question: string, options: string[]): Promise<string>;
@@ -554,6 +555,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
             flexShrink: 0,
           }),
         );
+      }
+    },
+    recordTool(title, output) {
+      toolLog.push({ title, output });
+      if (toolLog.length > 60) toolLog.shift();
+      if (expandedNode) {
+        expandedNode.destroyRecursively();
+        expandedNode = null;
       }
     },
     markdown(text, color) {
@@ -1542,6 +1551,29 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
   });
 
+  const toolLog: Array<{ title: string; output: string }> = [];
+  let expandedNode: TextRenderable | null = null;
+
+  const toggleLastTool = (): void => {
+    if (expandedNode) {
+      expandedNode.destroyRecursively();
+      expandedNode = null;
+      return;
+    }
+    const last = toolLog[toolLog.length - 1];
+    if (!last) {
+      ui.line('nothing to expand yet — run something first', theme.dim);
+      return;
+    }
+    expandedNode = new TextRenderable(renderer, {
+      content: `${last.title}\n${last.output.trim() || '(no output)'}`,
+      fg: theme.dim,
+      wrapMode: 'word',
+      flexShrink: 0,
+    });
+    addNode(expandedNode);
+  };
+
   const quitApp = (): void => {
     try {
       if (thinkingTimer) clearInterval(thinkingTimer);
@@ -1566,6 +1598,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       return;
     }
     if (key?.ctrl && key?.name === 'o') {
+      if (toolLog.length > 0) {
+        toggleLastTool();
+        return;
+      }
       if (!mode && !inputPurpose) openMenu();
       return;
     }
