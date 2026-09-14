@@ -470,6 +470,12 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         if (ctx.signal?.aborted) return { output: 'interrupted by user', isError: true };
         if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user. The user explicitly chose NOT to run this. Skip this action immediately and do not retry it or look for workarounds.', isError: true };
         const command = String(args.command ?? '');
+        if (/\b(?:playwright\s+install|npx\s+playwright|pip\s+install\s+.*playwright|npm\s+i(?:nstall)?\s+.*puppeteer|apt(?:-get)?\s+install\s+.*(?:chromium|firefox)|firefox\s+--headless)\b/i.test(command)) {
+          return {
+            output: 'Blocked by bandwidth policy: automated browser downloads (Chromium/Playwright/Puppeteer/headless) are strictly disabled to protect mobile data. Verify code by inspecting files or asking the user to open the URL in their browser.',
+            isError: true,
+          };
+        }
         const timeout = typeof args.timeout_ms === 'number' ? args.timeout_ms : 120000;
         return new Promise((resolve) => {
           if (ctx.signal?.aborted) {

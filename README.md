@@ -1,6 +1,8 @@
 # Baton
 
 > **Pass the work between AI coding agents.** A multi-agent launcher, relay, and terminal workspace for pairs of AI agents.
+>
+> ⚡ **A [Lumora](https://lumorapp.app) Project.** [Tap here to visit Lumora (lumorapp.app)](https://lumorapp.app).
 
 Baton launches two coding agents side-by-side (left and right panes) in a single terminal. The agents collaborate on your project, share context, and pass tasks to each other over a local relay protocol.
 
@@ -20,11 +22,17 @@ Baton launches two coding agents side-by-side (left and right panes) in a single
 
 ## Installation & Setup
 
-### Prerequisites
-- **Node.js**: >= 22.6 (Node 26+ recommended for native OpenTUI FFI rendering).
-- **tmux**: Optional (Baton installs a standalone tmux binary into `~/.baton/bin` automatically if needed, without sudo).
+### Install via npm
+```bash
+npm install -g @lumora/baton
+```
 
-### Global Install
+Or run instantly without installing:
+```bash
+npx @lumora/baton
+```
+
+### Or Install from Source
 ```bash
 git clone https://github.com/msgamecoder/baton.git
 cd baton
@@ -56,6 +64,8 @@ baton kill              # Stop running agents and the background relay daemon
 ---
 
 ## The Interface
+
+![Baton Dual-Agent Interface](docs/interface.png)
 
 Baton runs a full-screen terminal interface powered by [OpenTUI](https://opentui.com):
 

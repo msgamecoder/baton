@@ -1,6 +1,6 @@
 {
-  "name": "baton",
-  "version": "0.1.0",
+  "name": "@lumora/baton",
+  "version": "0.1.1",
   "description": "Pass the work between AI coding agents. A relay + launcher for any agent CLI.",
   "type": "module",
   "license": "MIT",
@@ -37,5 +37,8 @@
   ],
   "dependencies": {
     "@opentui/core": "^0.5.11"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

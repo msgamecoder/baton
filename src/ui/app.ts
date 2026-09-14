@@ -545,6 +545,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (thinkingTimer) clearInterval(thinkingTimer);
     thinkingTimer = null;
     status.content = '';
+    stopFooterSpinner();
   };
 
   const pauseThinking = (): void => {
@@ -566,13 +567,628 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     };
     paint();
     thinkingTimer = setInterval(paint, 200);
+    startFooterSpinner();
+  };
+
+  const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let spinnerIdx = 0;
+  let footerSpinnerTimer: ReturnType<typeof setInterval> | null = null;
+
+  const startFooterSpinner = (): void => {
+    if (footerSpinnerTimer) clearInterval(footerSpinnerTimer);
+    footerSpinnerTimer = setInterval(() => {
+      spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
+      setFooter();
+    }, 120);
+    setFooter();
+  };
+
+  const stopFooterSpinner = (): void => {
+    if (footerSpinnerTimer) clearInterval(footerSpinnerTimer);
+    footerSpinnerTimer = null;
+    setFooter();
   };
 
   const setFooter = (extra?: string): void => {
     const info = session.info();
     const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
-    const money = price ? `  ·  $${cost(price, info.usage.inputTokens, info.usage.outputTokens).toFixed(4)}` : '';
-    footer.content = `${session.title()}  ·  ${session.mode().toUpperCase()}  ·  ${info.messages} msgs  ·  ${formatTokens(
+    const money = price ? `  ·  import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import {
+  ASCIIFontRenderable,
+  BoxRenderable,
+  MarkdownRenderable,
+  ScrollBoxRenderable,
+  SyntaxStyle,
+  TextRenderable,
+  TextareaRenderable,
+  createCliRenderer,
+  type CliRenderer,
+  type Renderable,
+} from '@opentui/core';
+import { CONFIG_PATH, MEDIA_DIR } from '../core/paths.ts';
+import { protocolText } from '../core/instructions.ts';
+import { formatTables, wrapLines } from '../core/tables.ts';
+import { selectionText } from './selection.ts';
+import { keysFile, resolveKey, saveKey } from '../core/keys.ts';
+import { agentAliases, agentLabel as formatAgent, loadConfig, resolveAgent, saveConfig } from '../core/config.ts';
+import { allProviders } from '../providers/registry.ts';
+import { cheapestFor, cost, loadPrices } from '../core/cost.ts';
+import { memoryBlock, memoryLines, rememberFact, type MemoryEntry } from '../core/memory.ts';
+import { formatTaskList } from '../agent/tasks.ts';
+import { runUpdate, setConfirmHandler, type Session } from '../agent/session.ts';
+import { ensurePanes } from '../core/launcher.ts';
+import { formatTokens, totalTokens } from '../agent/history.ts';
+import { readRelayInbox } from '../agent/relay.ts';
+
+interface Theme {
+  bg: string;
+  panel: string;
+  accent: string;
+  text: string;
+  dim: string;
+  user: string;
+  tool: string;
+  error: string;
+  pick: string;
+}
+
+const THEMES: Record<string, Theme> = {
+  baton: {
+    bg: '#0f0f17', panel: '#181822', accent: '#8b7bd8', text: '#dcdcec',
+    dim: '#6b6b8f', user: '#7fd1b9', tool: '#e0b070', error: '#e06c75', pick: '#c8c0ff',
+  },
+  midnight: {
+    bg: '#0b1020', panel: '#141c33', accent: '#5b9dff', text: '#dbe4f5',
+    dim: '#66759b', user: '#6ee7b7', tool: '#f2c46d', error: '#f87171', pick: '#a9ccff',
+  },
+  forest: {
+    bg: '#0c1512', panel: '#14231d', accent: '#5fbf8f', text: '#dcece4',
+    dim: '#648074', user: '#8fd6a8', tool: '#d9c06a', error: '#e07a7a', pick: '#b6f0d0',
+  },
+  mono: {
+    bg: '#111113', panel: '#1c1c1f', accent: '#b9b9c8', text: '#e6e6ea',
+    dim: '#6e6e78', user: '#bfc6d8', tool: '#c8b28a', error: '#d98a8a', pick: '#ffffff',
+  },
+  daylight: {
+    bg: '#f5f5f8', panel: '#ffffff', accent: '#5b4bd6', text: '#1c1c24',
+    dim: '#6b6b80', user: '#0f766e', tool: '#b45309', error: '#b91c1c', pick: '#4338ca',
+  },
+};
+
+export interface ChatUi {
+  user(text: string): void;
+  assistant(): { set(text: string): void; append(chunk: string): void; appendReasoning?(chunk: string): void; done(): void };
+  line(text: string, color?: string): void;
+  wrap(text: string, color?: string): void;
+  markdown(text: string, color?: string): void;
+  setModel(model: string): void;
+  clear(): void;
+  ask?(question: string, options: string[]): Promise<string>;
+}
+
+export interface ChatAppOptions {
+  session: Session;
+  agent: string;
+  agentLabel?: string;
+  providerName: string;
+  version: string;
+  model: string;
+  cwd: string;
+  resume?: string;
+}
+
+type Command = { label: string; detail: string; group: string };
+
+const COMMANDS: Command[] = [
+  { group: 'session', label: 'help', detail: 'show this list' },
+  { group: 'session', label: 'plan', detail: 'plan first — read-only, no changes' },
+  { group: 'session', label: 'build', detail: 'go back to build mode' },
+  { group: 'session', label: 'new', detail: 'start a new session' },
+  { group: 'session', label: 'sessions', detail: 'switch session' },
+  { group: 'session', label: 'resume', detail: 'reopen an old session and read it back' },
+  { group: 'session', label: 'compact', detail: 'summarise the conversation to free context' },
+  { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
+  { group: 'session', label: 'clear', detail: 'forget this conversation' },
+  { group: 'session', label: 'undo', detail: 'revert the last file change made by this agent' },
+  { group: 'session', label: 'thinking', detail: 'toggle thinking visibility inline or collapsed' },
+  { group: 'session', label: 'quit', detail: 'exit' },
+
+  { group: 'model', label: 'model', detail: 'switch model' },
+  { group: 'model', label: 'provider', detail: 'connect or switch provider' },
+  { group: 'model', label: 'key', detail: 'save an api key' },
+  { group: 'model', label: 'theme', detail: 'switch theme' },
+  { group: 'model', label: 'cost', detail: 'price estimate' },
+
+  { group: 'project', label: 'learn', detail: 'read a folder and remember what matters' },
+  { group: 'project', label: 'init', detail: 'write AGENTS.md for handoffs' },
+  { group: 'project', label: 'files', detail: 'attach a file' },
+  { group: 'project', label: 'diff', detail: 'show uncommitted changes' },
+  { group: 'project', label: 'review', detail: 'ask the agent to review the diff' },
+
+  { group: 'baton', label: 'status', detail: 'provider, model, session, tokens' },
+  { group: 'baton', label: 'debug', detail: 'paths, versions, config' },
+  { group: 'baton', label: 'update', detail: 'update baton and restart' },
+  { group: 'baton', label: 'thinking', detail: 'show or hide the thinking indicator' },
+  { group: 'baton', label: 'yes', detail: 'toggle auto-approve for tools' },
+  { group: 'baton', label: 'memory', detail: 'what baton remembers about you' },
+  { group: 'baton', label: 'tasks', detail: 'the task list for this session' },
+  { group: 'baton', label: 'copy', detail: 'copy the last reply' },
+  { group: 'baton', label: 'menu', detail: 'menu: copy, or open the other agent' },
+  { group: 'baton', label: 'split', detail: 'add the other agent pane back' },
+  { group: 'baton', label: 'context', detail: 'protocol and memory' },
+  { group: 'baton', label: 'remember', detail: 'keep a fact across sessions' },
+
+  { group: 'relay', label: 'send', detail: 'message the other agent' },
+  { group: 'relay', label: 'inbox', detail: 'read the relay inbox' },
+];
+
+const BLURBS: Record<string, string> = {
+  'command-code': 'Claude and DeepSeek via Command Code',
+  opencode: 'OpenCode Zen',
+  'opencode-go': 'Low cost subscription for everyone',
+  anthropic: 'Claude (Anthropic) API key',
+  openai: 'GPT models',
+  google: 'Google Gemini',
+  xai: 'Grok',
+  mistral: 'Mistral models',
+  perplexity: 'Search-grounded answers',
+  deepseek: 'Cheapest frontier models',
+  moonshot: 'Kimi K2',
+  groq: 'Fastest inference',
+  together: 'Open models, fine-tuning',
+  fireworks: 'Production inference',
+  cerebras: 'Wafer-scale speed',
+  deepinfra: 'Open model hosting',
+  siliconflow: 'China-friendly open models',
+  zai: 'GLM models',
+  dashscope: 'Qwen models',
+  openrouter: '200+ models, one key',
+  vercel: 'Vercel AI Gateway',
+  litellm: 'Your own proxy',
+  ollama: 'Runs on your machine',
+  lmstudio: 'Runs on your machine',
+  vllm: 'Your own server',
+  custom: 'Any OpenAI-compatible URL',
+};
+
+interface Row {
+  kind: 'header' | 'item' | 'blank';
+  label: string;
+  detail?: string;
+  value?: string;
+  checked?: boolean;
+}
+
+type Mode =
+  | 'command'
+  | 'provider'
+  | 'theme'
+  | 'model'
+  | 'sessions'
+  | 'export'
+  | 'file'
+  | 'info'
+  | 'custom-format'
+  | 'question'
+  | 'menu';
+
+function visibleLength(text: string): number {
+  return text.replace(/\u001b\[[0-9;]*m/g, '').length;
+}
+
+function pad(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(0, width - visibleLength(text)));
+}
+
+function clip(text: string, width: number): string {
+  return text.length > width ? `${text.slice(0, width - 1)}…` : text;
+}
+
+const SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  '.next',
+  'out',
+  'coverage',
+  'target',
+  'vendor',
+  '__pycache__',
+  '.venv',
+  'venv',
+  'Pods',
+]);
+
+function listFiles(root: string, limit = 4000): string[] {
+  const out: string[] = [];
+  const queue = [root];
+  while (queue.length > 0 && out.length < limit) {
+    const dir = queue.shift() as string;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry) || entry.startsWith('.')) continue;
+      const full = join(dir, entry);
+      try {
+        if (statSync(full).isDirectory()) {
+          out.push(`${relative(root, full)}/`);
+          queue.push(full);
+        } else out.push(relative(root, full));
+      } catch {
+        continue;
+      }
+    }
+  }
+  return out.sort((a, b) => {
+    const aDir = a.endsWith('/');
+    const bDir = b.endsWith('/');
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    return a.localeCompare(b);
+  });
+}
+
+function clipboardImage(): string | null {
+  const attempts: Array<[string, string[]]> = [
+    ['wl-paste', ['-t', 'image/png']],
+    ['xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o']],
+  ];
+  for (const [cmd, args] of attempts) {
+    const result = spawnSync(cmd, args, { maxBuffer: 64 * 1024 * 1024 });
+    if (!result.error && result.status === 0 && result.stdout && result.stdout.length > 200) {
+      mkdirSync(MEDIA_DIR, { recursive: true });
+      const file = join(MEDIA_DIR, `paste-${Date.now()}.png`);
+      writeFileSync(file, result.stdout);
+      return file;
+    }
+  }
+  return null;
+}
+
+function clipboardText(): string | null {
+  const attempts: Array<[string, string[]]> = [
+    ['wl-paste', ['--no-newline']],
+    ['xclip', ['-selection', 'clipboard', '-o']],
+  ];
+  for (const [cmd, args] of attempts) {
+    const result = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    if (!result.error && result.status === 0 && typeof result.stdout === 'string' && result.stdout.length > 0) {
+      return result.stdout;
+    }
+  }
+  return null;
+}
+
+export async function runChatApp(options: ChatAppOptions): Promise<void> {
+  const { session } = options;
+  let themeName = 'baton';
+  let theme = THEMES[themeName];
+
+  let syntax: SyntaxStyle | null = null;
+  try {
+    syntax = SyntaxStyle.create();
+  } catch {
+    syntax = null;
+  }
+
+  const renderer: CliRenderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    backgroundColor: theme.bg,
+    screenMode: 'alternate-screen',
+    targetFps: 60,
+    useMouse: true,
+    enableMouseMovement: true,
+  });
+
+  const assertTitle = (): void => {
+    try {
+      process.title = 'baton';
+      // OSC 0 sets the tab/window title (tmux also gets set-titles-string baton)
+      process.stdout.write('\u001b]0;baton\u0007');
+    } catch {
+      /* the terminal may not allow it */
+    }
+  };
+  assertTitle();
+
+  // "Nova · left" — the agent's name and the pane it lives in
+  let selfLabel = ((): string => {
+    if (options.agentLabel) return options.agentLabel;
+    const agent = resolveAgent(loadConfig().agents, options.agent);
+    return agent ? formatAgent(agent) : options.agent;
+  })();
+  let selfAliases = ((): string[] => agentAliases(loadConfig().agents, options.agent))();
+  let selfName = ((): string => {
+    const agent = resolveAgent(loadConfig().agents, options.agent);
+    return agent?.name ?? options.agent;
+  })();
+
+  const root = new BoxRenderable(renderer, {
+    id: 'root',
+    width: '100%',
+    height: '100%',
+    flexDirection: 'column',
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    backgroundColor: theme.bg,
+  });
+  renderer.root.add(root);
+
+  const header = new BoxRenderable(renderer, { id: 'header', flexDirection: 'column', alignItems: 'center', flexShrink: 0 });
+  header.add(new ASCIIFontRenderable(renderer, { id: 'wordmark', text: 'BATON', font: 'tiny', color: theme.accent }));
+  const subtitle = new TextRenderable(renderer, {
+    id: 'subtitle',
+    content: `${selfName}   ·   ${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
+    fg: theme.dim,
+  });
+  header.add(subtitle);
+  root.add(header);
+
+  const spacer = new TextRenderable(renderer, { id: 'spacer', content: '', fg: theme.dim, flexShrink: 0 });
+  root.add(spacer);
+
+  const scroll = new ScrollBoxRenderable(renderer, { id: 'scroll', flexGrow: 1, width: '100%' });
+  scroll.stickyScroll = false;
+  scroll.stickyStart = 'bottom';
+  scroll.verticalScrollBar.visible = false;
+  scroll.horizontalScrollBar.visible = false;
+  root.add(scroll);
+
+  const handleScrollWheel = (event: any): void => {
+    const isUp = event?.scroll?.direction === "up" || event?.button === 4 || event?.button === "wheel-up";
+    const isDown = event?.scroll?.direction === "down" || event?.button === 5 || event?.button === "wheel-down";
+    const delta = isUp ? -3 : isDown ? 3 : 0;
+    if (delta !== 0) {
+      if (transcriptOpen) {
+        transcriptScroll.scrollBy(delta);
+      } else {
+        scroll.scrollBy(delta);
+      }
+    }
+  };
+  scroll.onMouseScroll = handleScrollWheel;
+  root.onMouseScroll = handleScrollWheel;
+
+  const status = new TextRenderable(renderer, { id: 'status', content: '', fg: theme.dim, height: 1, flexShrink: 0 });
+  root.add(status);
+
+  const inputBox = new BoxRenderable(renderer, {
+    id: 'inputbox',
+    border: true,
+    borderColor: theme.accent,
+    height: 'auto',
+    minHeight: 3,
+    flexShrink: 0,
+    marginTop: 1,
+    paddingLeft: 1,
+    paddingRight: 1,
+    title: ' message ',
+    titleAlignment: 'left',
+  });
+  // A textarea, not the single-line input: long paths/URLs wrap instead of running
+  // off the box. Enter submits (the submit action); shift+enter adds a newline.
+  const input = new TextareaRenderable(renderer, {
+    id: 'input',
+    flexGrow: 1,
+    minHeight: 1,
+    maxHeight: 6,
+    wrapMode: 'word',
+    placeholder: 'Ask anything…    /  commands    @  files',
+    backgroundColor: theme.bg,
+    textColor: theme.text,
+    placeholderColor: theme.dim,
+    keyBindings: [
+      { name: 'return', action: 'submit' },
+      { name: 'kpenter', action: 'submit' },
+      { name: 'linefeed', action: 'submit' },
+      { name: 'return', shift: true, action: 'newline' },
+    ],
+  });
+  inputBox.add(input);
+  root.add(inputBox);
+
+  const inputText = (): string => input.plainText;
+  const setInput = (text: string): void => {
+    input.setText(text);
+    input.cursorOffset = text.length;
+  };
+
+  const footer = new TextRenderable(renderer, { id: 'footer', content: '', fg: theme.dim, flexShrink: 0 });
+  root.add(footer);
+
+  const overlay = new BoxRenderable(renderer, {
+    id: 'overlay',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 100,
+    visible: false,
+  });
+  const dialog = new BoxRenderable(renderer, {
+    id: 'dialog',
+    width: '76%',
+    flexDirection: 'column',
+    flexShrink: 0,
+    border: true,
+    borderColor: theme.accent,
+    backgroundColor: theme.panel,
+    titleAlignment: 'left',
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    paddingBottom: 1,
+  });
+  overlay.add(dialog);
+  renderer.root.add(overlay);
+
+  // ctrl+o: the whole conversation full screen — no wordmark, no message box
+  const transcriptOverlay = new BoxRenderable(renderer, {
+    id: 'transcript',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 200,
+    visible: false,
+    flexDirection: 'column',
+    backgroundColor: theme.bg,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    paddingBottom: 1,
+  });
+  const transcriptBox = new BoxRenderable(renderer, {
+    id: 'transcriptbox',
+    flexGrow: 1,
+    flexDirection: 'column',
+    border: true,
+    borderColor: theme.accent,
+    backgroundColor: theme.panel,
+    title: ' detailed transcript ',
+    titleAlignment: 'left',
+    paddingLeft: 2,
+    paddingRight: 2,
+  });
+  const transcriptScroll = new ScrollBoxRenderable(renderer, { id: 'transcriptscroll', flexGrow: 1, width: '100%' });
+  transcriptScroll.verticalScrollBar.visible = false;
+  transcriptScroll.horizontalScrollBar.visible = false;
+  transcriptBox.add(transcriptScroll);
+  transcriptScroll.onMouseScroll = handleScrollWheel;
+  transcriptOverlay.add(transcriptBox);
+  transcriptOverlay.add(
+    new TextRenderable(renderer, {
+      id: 'transcriptfooter',
+      content: ' ctrl+o  close      esc  close      ↑/↓  pgup/pgdn  scroll',
+      fg: theme.dim,
+      height: 1,
+      flexShrink: 0,
+    }),
+  );
+  renderer.root.add(transcriptOverlay);
+
+  const viewportHeight = (): number => {
+    const box = scroll.viewport as unknown as { height?: number } | undefined;
+    return Math.max(4, Number(box?.height ?? 24));
+  };
+
+  // width available to chat content — the root pads 2 columns on each side
+  const contentWidth = (): number => {
+    const columns = Number(process.stdout.columns);
+    const usable = Number.isFinite(columns) && columns > 0 ? columns : 100;
+    return Math.max(40, usable - 6);
+  };
+
+  const atBottom = (): boolean => {
+    try {
+      return scroll.scrollTop + viewportHeight() >= scroll.scrollHeight - 2;
+    } catch {
+      return true;
+    }
+  };
+
+  const keepBottom = (): void => {
+    if (atBottom()) scroll.scrollTo(scroll.scrollHeight);
+  };
+
+  const addNode = (node: Renderable): void => {
+    scroll.content.add(node);
+    keepBottom();
+  };
+
+  let thinkingOn = true;
+  let showThinking = false;
+
+  const formatDuration = (sec: number): string => {
+    if (sec < 60) return `${sec.toFixed(1)}s`;
+    const m = Math.floor(sec / 60);
+    const rem = Math.floor(sec % 60);
+    return `${m}m ${rem}s`;
+  };
+
+  let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+  let turnStarted = 0;
+  let totalThinking = 0;
+  const startedAt = Date.now();
+  let lastCopiedAt = 0;
+  const THINK_WORDS = [
+    'thinking',
+    'coding',
+    'pondering',
+    'noodling',
+    'reasoning',
+    'brewing',
+    'working',
+    'mulling',
+    'tinkering',
+    'scheming',
+  ];
+
+  const stopThinking = (): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    status.content = '';
+    stopFooterSpinner();
+  };
+
+  const pauseThinking = (): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    if (thinkingOn) status.content = 'waiting for your answer…';
+  };
+
+  const startThinking = (keepStart = false): void => {
+    if (thinkingTimer) clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    scroll.scrollTo(scroll.scrollHeight);
+    if (!keepStart || !turnStarted) turnStarted = Date.now();
+    if (!thinkingOn) return;
+    const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
+    const paint = (): void => {
+      const elapsed = (Date.now() - turnStarted) / 1000;
+      status.content = `${word}… ${formatDuration(elapsed)}   (esc to interrupt)`;
+    };
+    paint();
+    thinkingTimer = setInterval(paint, 200);
+    startFooterSpinner();
+  };
+
+  const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let spinnerIdx = 0;
+  let footerSpinnerTimer: ReturnType<typeof setInterval> | null = null;
+
+  const startFooterSpinner = (): void => {
+    if (footerSpinnerTimer) clearInterval(footerSpinnerTimer);
+    footerSpinnerTimer = setInterval(() => {
+      spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
+      setFooter();
+    }, 120);
+    setFooter();
+  };
+
+  const stopFooterSpinner = (): void => {
+    if (footerSpinnerTimer) clearInterval(footerSpinnerTimer);
+    footerSpinnerTimer = null;
+    setFooter();
+  };
+
+  const setFooter = (extra?: string): void => {
+    const info = session.info();
+    const price = loadPrices().find((entry) => entry.id === info.model || info.model.includes(entry.id));
+     + cost(price, info.usage.inputTokens, info.usage.outputTokens).toFixed(4) : '';
+    const statusSign = busy ? `${SPINNER_FRAMES[spinnerIdx]} WORKING  ·  ` : '';
+    footer.content = `${session.title()}  ·  ${statusSign}${session.mode().toUpperCase()}  ·  ${info.messages} msgs  ·  ${formatTokens(
       totalTokens(info.usage),
     )} tokens${money}${extra ? `  ·  ${extra}` : ''}`;
   };
@@ -1527,13 +2143,26 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   const copyToClipboard = (text: string): boolean => {
-    for (const cmd of ['wl-copy', 'xclip -selection clipboard', 'pbcopy']) {
-      const result = spawnSync(cmd, { shell: true, input: text });
-      if (!result.error && result.status === 0) return true;
+    if (!text) return false;
+    if (process.env.TMUX) {
+      try {
+        const res = spawnSync('tmux load-buffer -w -', { shell: true, input: text, timeout: 1000 });
+        if (!res.error && res.status === 0) return true;
+      } catch {}
+    }
+    for (const cmd of ['wl-copy', 'xclip -selection clipboard', 'xsel --clipboard --input', 'pbcopy']) {
+      try {
+        const result = spawnSync(cmd, { shell: true, input: text, timeout: 1000 });
+        if (!result.error && result.status === 0) return true;
+      } catch {}
     }
     try {
       const payload = Buffer.from(text, 'utf8').toString('base64');
-      process.stdout.write(`\u001b]52;c;${payload}\u0007`);
+      if (process.env.TMUX) {
+        process.stdout.write(`\u001bPtmux;\u001b\u001b]52;c;${payload}\u0007\u001b\\`);
+      } else {
+        process.stdout.write(`\u001b]52;c;${payload}\u0007`);
+      }
       return true;
     } catch {
       return false;
@@ -2117,6 +2746,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     closeModal();
     startThinking();
     busy = true;
+    startFooterSpinner();
     void dispatch(value)
       .then(async () => {
         if (session.mode() === 'plan' && !inputPurpose) {
@@ -2147,6 +2777,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         if (thinkingOn && elapsed > 0.4) ui.line(`· ${formatDuration(elapsed)}`, theme.dim);
         totalThinking += elapsed;
         busy = false;
+        stopFooterSpinner();
         assertTitle();
         setFooter();
         input.focus();
