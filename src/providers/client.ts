@@ -272,6 +272,7 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
       break;
     } catch (error) {
       failure = error;
+      if (signal?.aborted) break;
       const status = (error as { status?: number }).status;
       const retryable = status === undefined || status === 429 || status >= 500;
       const alreadyStreamed = state.text.length > 0 || state.toolCalls.length > 0;

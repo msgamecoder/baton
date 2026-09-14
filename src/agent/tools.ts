@@ -33,6 +33,7 @@ export interface ToolContext {
   sessionId?: string;
   confirm?: (name: string, args: Record<string, unknown>) => Promise<boolean>;
   ask?: (question: string, options: string[]) => Promise<string>;
+  signal?: AbortSignal;
 }
 
 const MAX_OUTPUT = 6000;
@@ -340,7 +341,7 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         };
       }
       case 'write_file': {
-        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
+        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user. The user explicitly chose NOT to run this. Skip this action immediately and do not retry it or look for workarounds.', isError: true };
         const path = resolvePath(ctx.cwd, String(args.path ?? ''));
         const previous = existsSync(path) ? readFileSync(path, 'utf8') : null;
         mkdirSync(dirname(path), { recursive: true });
@@ -360,7 +361,7 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         if (count > 1 && !args.replace_all) {
           return { output: `old_string appears ${count} times — pass replace_all or add context`, isError: true };
         }
-        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
+        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user. The user explicitly chose NOT to run this. Skip this action immediately and do not retry it or look for workarounds.', isError: true };
         undoStack.push({ path, previousContent: original, ts: Date.now() });
         const updated = args.replace_all
           ? original.split(needle).join(String(args.new_string ?? ''))
@@ -466,10 +467,15 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         return { output: `the user answered: ${answer}` };
       }
       case 'shell': {
-        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
+        if (ctx.signal?.aborted) return { output: 'interrupted by user', isError: true };
+        if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user. The user explicitly chose NOT to run this. Skip this action immediately and do not retry it or look for workarounds.', isError: true };
         const command = String(args.command ?? '');
         const timeout = typeof args.timeout_ms === 'number' ? args.timeout_ms : 120000;
         return new Promise((resolve) => {
+          if (ctx.signal?.aborted) {
+            resolve({ output: 'interrupted by user', isError: true });
+            return;
+          }
           const child = spawn(command, {
             shell: true,
             cwd: ctx.cwd,
@@ -478,10 +484,22 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
           let stdout = '';
           let stderr = '';
           let timedOut = false;
+          let settled = false;
+
           const timer = setTimeout(() => {
             timedOut = true;
             try { child.kill('SIGTERM'); } catch {}
           }, timeout);
+
+          const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { child.kill('SIGTERM'); } catch {}
+            setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 400);
+            resolve({ output: 'interrupted by user (esc)', isError: true });
+          };
+          ctx.signal?.addEventListener('abort', onAbort, { once: true });
 
           child.stdout?.on('data', (chunk) => {
             if (stdout.length < 10 * 1024 * 1024) stdout += chunk.toString('utf8');
@@ -490,11 +508,17 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
             if (stderr.length < 10 * 1024 * 1024) stderr += chunk.toString('utf8');
           });
           child.on('error', (err) => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timer);
+            ctx.signal?.removeEventListener('abort', onAbort);
             resolve({ output: `error: ${err.message}`, isError: true });
           });
           child.on('close', (code) => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timer);
+            ctx.signal?.removeEventListener('abort', onAbort);
             if (timedOut) {
               resolve({ output: `timeout after ${timeout}ms`, isError: true });
               return;

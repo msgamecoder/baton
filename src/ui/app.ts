@@ -341,11 +341,26 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   root.add(spacer);
 
   const scroll = new ScrollBoxRenderable(renderer, { id: 'scroll', flexGrow: 1, width: '100%' });
-  scroll.stickyScroll = true;
+  scroll.stickyScroll = false;
   scroll.stickyStart = 'bottom';
   scroll.verticalScrollBar.visible = false;
   scroll.horizontalScrollBar.visible = false;
   root.add(scroll);
+
+  const handleScrollWheel = (event: any): void => {
+    const isUp = event?.scroll?.direction === "up" || event?.button === 4 || event?.button === "wheel-up";
+    const isDown = event?.scroll?.direction === "down" || event?.button === 5 || event?.button === "wheel-down";
+    const delta = isUp ? -3 : isDown ? 3 : 0;
+    if (delta !== 0) {
+      if (transcriptOpen) {
+        transcriptScroll.scrollBy(delta);
+      } else {
+        scroll.scrollBy(delta);
+      }
+    }
+  };
+  scroll.onMouseScroll = handleScrollWheel;
+  root.onMouseScroll = handleScrollWheel;
 
   const status = new TextRenderable(renderer, { id: 'status', content: '', fg: theme.dim, height: 1, flexShrink: 0 });
   root.add(status);
@@ -456,6 +471,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   transcriptScroll.verticalScrollBar.visible = false;
   transcriptScroll.horizontalScrollBar.visible = false;
   transcriptBox.add(transcriptScroll);
+  transcriptScroll.onMouseScroll = handleScrollWheel;
   transcriptOverlay.add(transcriptBox);
   transcriptOverlay.add(
     new TextRenderable(renderer, {
@@ -1753,6 +1769,36 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       deleteSelectedSession();
       return true;
     }
+    if (key?.name === 'escape' && busy) {
+      session.abort();
+      stopThinking();
+      ui.line("interrupted (esc)", theme.dim);
+      return true;
+    }
+    if (!mode && !inputPurpose) {
+      if ((key?.name === 'up' || key?.name === 'down') && (key?.shift || key?.alt || key?.meta)) {
+        scroll.scrollBy(key.name === 'up' ? -3 : 3);
+        return true;
+      }
+      if (key?.name === 'pageup' || (key?.ctrl && key?.name === 'u')) {
+        scroll.scrollBy(-Math.max(4, Math.floor(viewportHeight() / 2)));
+        return true;
+      }
+      if (key?.name === 'pagedown' || (key?.ctrl && key?.name === 'd')) {
+        scroll.scrollBy(Math.max(4, Math.floor(viewportHeight() / 2)));
+        return true;
+      }
+      if (!input.plainText || input.plainText.length === 0) {
+        if (key?.name === 'up') {
+          scroll.scrollBy(-3);
+          return true;
+        }
+        if (key?.name === 'down') {
+          scroll.scrollBy(3);
+          return true;
+        }
+      }
+    }
     const before = input.plainText;
     const handled = inputHandleKeyPress(key);
     // only react to keys that changed the text, so arrow keys keep navigating a palette
@@ -1948,10 +1994,25 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
       if (key?.name === 'escape' && busy) {
         session.abort();
+        stopThinking();
+        ui.line("interrupted (esc)", theme.dim);
         return;
       }
       if (key?.name === 'escape' && inputText()) {
         setInput('');
+        return;
+      }
+      if ((key?.name === 'up' || key?.name === 'down') && (key?.shift || key?.alt || key?.meta)) {
+        scroll.scrollBy(key.name === 'up' ? -3 : 3);
+        return;
+      }
+      if (key?.name === 'up' && !inputText()) {
+        scroll.scrollBy(-3);
+        return;
+      }
+      if (key?.name === 'down' && !inputText()) {
+        scroll.scrollBy(3);
+        return;
       }
       return;
     }
