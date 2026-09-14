@@ -36,6 +36,7 @@ function usedToolIds(messages: ChatMessage[]): Set<string> {
 
 export interface TurnEvents {
   onText?: (chunk: string) => void;
+  onReasoning?: (chunk: string) => void;
   onRetry?: (attempt: number, message: string) => void;
   onToolStart?: (call: ToolCall) => void;
   onToolEnd?: (call: ToolCall, output: string, isError: boolean) => void;
@@ -164,6 +165,7 @@ export async function runTurn(
       signal: options.signal,
       maxTokens: options.maxTokens,
       onText: events.onText,
+      onReasoning: events.onReasoning,
       onRetry: events.onRetry,
     });
 
@@ -174,6 +176,7 @@ export async function runTurn(
     history.push({
       role: 'assistant',
       content: result.text,
+      ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       ...(toolCalls.length ? { toolCalls } : {}),
     });
     finalText = result.text;

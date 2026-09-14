@@ -1,3 +1,24 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
+export function ensureProjectBatonDir(cwd: string = process.cwd()): string {
+  const dir = join(cwd, ".baton");
+  mkdirSync(join(dir, "plans"), { recursive: true });
+  mkdirSync(join(dir, "walkthroughs"), { recursive: true });
+  mkdirSync(join(dir, "chats"), { recursive: true });
+  const gitPath = join(cwd, ".git");
+  if (existsSync(gitPath)) {
+    const gitignorePath = join(cwd, ".gitignore");
+    try {
+      const existing = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+      if (!existing.split("\n").some((line) => line.trim() === ".baton" || line.trim() === ".baton/")) {
+        const appended = existing.length > 0 && !existing.endsWith("\n") ? `${existing}\n.baton/\n` : `${existing}.baton/\n`;
+        writeFileSync(gitignorePath, appended);
+      }
+    } catch {}
+  }
+  return dir;
+}
+
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,9 +55,13 @@ export function projectDir(cwd: string = process.cwd()): string {
 }
 
 export function projectChatDir(cwd: string = process.cwd()): string {
-  return join(projectDir(cwd), 'chats');
+  const local = join(cwd, ".baton", "chats");
+  if (existsSync(join(cwd, ".baton"))) return local;
+  return join(projectDir(cwd), "chats");
 }
 
 export function projectMemoryPath(cwd: string = process.cwd()): string {
-  return join(projectDir(cwd), 'memory.json');
+  const local = join(cwd, ".baton", "memory.json");
+  if (existsSync(join(cwd, ".baton"))) return local;
+  return join(projectDir(cwd), "memory.json");
 }

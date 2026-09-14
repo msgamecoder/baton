@@ -36,6 +36,7 @@ import {
 export interface StreamHandle {
   set(text: string): void;
   append(chunk: string): void;
+  appendReasoning?(chunk: string): void;
   done(): void;
 }
 
@@ -606,6 +607,7 @@ export function createSession(options: SessionOptions): Session {
           readOnly: agentMode === 'plan',
           events: {
             onText: (chunk) => stream.append(chunk),
+            onReasoning: (chunk) => stream.appendReasoning?.(chunk),
             onRetry: (attempt, message) =>
               ui.line(`connecting… retry ${attempt}/10  (${message.slice(0, 90)})`, '#e0b070'),
             onToolStart: (call) => {

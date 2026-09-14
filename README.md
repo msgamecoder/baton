@@ -1,226 +1,187 @@
 # Baton
 
-**Your own AI coding agent — two of them, in one terminal, handing work to each other.**
+> **Pass the work between AI coding agents.** A multi-agent launcher, relay, and terminal workspace for pairs of AI agents.
 
-Baton is not a wrapper around another CLI. It is its own agent: you pick a model provider,
-paste your API key, and talk to it. Install two of them side by side and they pass work
-back and forth instead of you relaying by hand.
+Baton launches two coding agents side-by-side (left and right panes) in a single terminal. The agents collaborate on your project, share context, and pass tasks to each other over a local relay protocol.
 
-- **No provider SDK, no other agent CLI.** Baton talks to the provider's HTTP API directly.
-- **Bring your own key.** Command Code, OpenCode Zen/Go, Claude, OpenAI, DeepSeek,
-  Kimi/Moonshot, Gemini, OpenRouter, Groq, xAI, Mistral, or a local Ollama/LM Studio.
-- **It can actually code** — read/write/edit files, glob, grep, run shell commands.
-- **Two sides, two setups.** Left pane and right pane can each use a different provider,
-  key and model.
+---
 
-![Baton — two agents side by side, each with its own name and pane](docs/interface.png)
+## Highlights
 
-## What Baton solves
+- **Dual-Agent Terminal Workspace**: Two agents working together in split tmux panes.
+- **In-Project Isolation**: Every project has its own `.baton/` folder for plans (`.baton/plans/`), walkthroughs (`.baton/walkthroughs/`), isolated memory, and chat sessions.
+- **Code Diffs in Chat**: View file changes inline with colored diffs (`- deleted` lines in red, `+ added` lines in green).
+- **Thinking Display**: Clean, compact thought indicator (`Thought for 4s ▸`). View full reasoning anytime with `ctrl+o` (transcript view) or toggle inline visibility with `/thinking`.
+- **Undo Support (`/undo`)**: Instantly revert the last file edit or write made by an agent.
+- **Safe by Default**: Shell commands and file modifications ask for confirmation (`Yes / No`). Agent-to-agent communication commands (`baton inbox`, `baton send`, etc.) run automatically without interruption. Pass `--yes` to bypass all prompts.
+- **Non-Blocking Execution**: Asynchronous tool runner ensures timers, thinking indicators, and keystrokes never freeze during long-running commands.
 
-Working with two AI agents normally makes **you** the messenger: copy the error out of one
-chat, paste it into the other, copy the answer back, repeat. You lose the context, the file
-the first agent just touched, and your own attention.
+---
 
-Baton takes you out of the middle:
+## Installation & Setup
 
-- **The agents hand work to each other.** A local relay (an append-only log plus a small
-  daemon) lets one side send a handoff, question or error to the other and get an answer,
-  with a hop cap so it can never loop. This is the difference from just opening two
-  terminals: they actually pass the work.
-- **You stay in charge.** Both conversations are on screen at once — step in whenever you
-  want, or let them continue. `ctrl+o` opens the full-screen transcript of the conversation
-  without the input box in the way.
-- **One tool, your own keys.** No second CLI and no vendor lock-in: pick a provider, paste
-  a key, and both panes are your own agents, each with its own name (`Nova · left`,
-  `Rex · right`) and model.
-- **It works on the real project.** The agent reads, edits and runs things in your working
-  directory, and each project keeps its own sessions and its own relay traffic.
+### Prerequisites
+- **Node.js**: >= 22.6 (Node 26+ recommended for native OpenTUI FFI rendering).
+- **tmux**: Optional (Baton installs a standalone tmux binary into `~/.baton/bin` automatically if needed, without sudo).
 
-## Install
-
-Requires **Node.js >= 22.6** (Baton runs TypeScript directly — no build step, no runtime
-dependencies).
-
+### Global Install
 ```bash
-npm install -g .          # from a checkout
-bash scripts/install.sh   # or: install + optional terminal multiplexer
+git clone https://github.com/msgamecoder/baton.git
+cd baton
+npm install -g .
 ```
 
-## First run
+---
 
+## First Run
+
+From any project directory:
 ```bash
 baton
 ```
 
-1. It checks node and the terminal, and installs a multiplexer if you want panes
-   (**no sudo** — tmux is unpacked into `~/.baton/bin`).
-2. It opens an **interactive setup**: a list you drive with **↑/↓ and Enter** (type to
-   filter, `esc` to cancel), one box per step —
+1. **Terminal & Dependency Check**: Detects your environment and installs multiplexer tools into `~/.baton/bin` if missing.
+2. **Interactive Setup**: Select your model provider (OpenCode Go, DeepSeek, Claude, OpenAI, Ollama, etc.) with arrow keys and enter your API key.
+3. **Launch**: Splits into dual panes with your agents ready to build.
 
-   ```
-   choose a provider
-   ──────────────────────────────────────────────
-   recommended
-   ❯ Command Code            anthropic  needs key
-     OpenCode Zen            openai     needs key
-     OpenCode Go             openai     needs key
-     Claude (Anthropic)      anthropic  needs key
-   frontier models
-     OpenAI                  openai     needs key
-   ...
-   ──────────────────────────────────────────────
-   ↑/↓ move · type to filter · enter select · esc cancel
-   ```
-
-   For known providers the **base URL is built in** — you never type it; the next box just
-   asks for your key. Then it **fetches the model list from that provider** so you pick
-   from a second arrow-key list.
-3. It asks whether the right side should use a different provider/model, then launches:
-   **left pane and right pane, both running Baton's own agent.**
-
-Re-running `baton` attaches to what is already running. `baton kill` stops everything.
-
-```
-baton                   set up + launch (--no-start, --yes, --force)
-baton chat              talk to the agent here (--agent, --provider, --model, --session)
-baton ask "…"           one-shot headless run (--yes to allow tools)
-```
-
-Sessions are kept **per project** — `/sessions` lists the ones recorded in the current
-working directory, so a new project starts with a clean list. `ctrl+d` deletes the selected
-session, but not the one you are currently in (switch away first).
-
-## The interface
-
-`baton chat` opens Baton's **own full-screen terminal UI**, built on
-[OpenTUI](https://opentui.com) — the same native Zig renderer OpenCode uses. Not a
-scrolling list: an alternate-screen app with a block **BATON** wordmark, a bordered
-`conversation` panel that scrolls, a bordered `ask anything` input with a real cursor, and
-a status footer.
-
-```
-        █▄▄ ▄▀█ ▀█▀ █▀█ █▄ █
-        █▄█ █▀█  █  █▄█ █ ▀█
-
-                    oc · OpenCode Go · deepseek-v4.1-flash
-
-  ┌─ conversation ──────────────────────────────────────────────┐
-  │ › refactor the auth module                                  │
-  │ -> read_file src/auth.ts                                    │
-  │ I moved the token check into verifyToken()...               │
-  └─────────────────────────────────────────────────────────────┘
-  ┌─ ask anything ──────────────────────────────────────────────┐
-  │ ❯ _                                                         │
-  └─────────────────────────────────────────────────────────────┘
-  enter send · /help commands · ctrl+c quit · /home/you/project
-```
-
-Type a request and press Enter. `/help` lists the slash commands. Tool calls stream in as
-they happen. `baton up` puts two of these side by side — left and right, each with its own
-provider, key and model.
-
-Requirements for the full-screen UI: **Node 26.4+** (OpenTUI's native core needs FFI).
-Baton re-execs itself with `--experimental-ffi` automatically. On older Node, or if the
-native library cannot load, it prints why and falls back to the plain text chat.
-
-## Providers
-
+### Running Options
 ```bash
-baton providers                     # what is available, and whether a key is set
-baton key deepseek sk-…             # save a key (written to ~/.baton/keys.json, chmod 600)
-baton models --provider deepseek    # list models straight from the provider
-baton providers --json
+baton                   # Launch or attach to dual-agent session
+baton --yes             # Run with full auto-approve (bypass tool confirmation prompts)
+baton chat              # Launch single-agent full-screen interactive UI
+baton ask "prompt"      # One-shot headless task
+baton kill              # Stop running agents and the background relay daemon
 ```
 
-The picker groups them:
+---
 
-- **recommended** — Command Code · OpenCode Zen · OpenCode Go · Claude (Anthropic)
-- **frontier models** — OpenAI · Google Gemini · xAI (Grok) · Mistral · Perplexity
-- **open models (fast + cheap)** — DeepSeek · Kimi (Moonshot) · Groq · Together AI ·
-  Fireworks AI · Cerebras · DeepInfra · SiliconFlow · Z.ai (GLM) · Alibaba DashScope (Qwen)
-- **gateways / routers** — OpenRouter · Vercel AI Gateway · LiteLLM (your own proxy)
-- **local (no key)** — Ollama · LM Studio · vLLM
-- **something else** — *Custom endpoint*
+## The Interface
 
-Picking **Custom endpoint** asks for the **name, base URL, format (openai/anthropic) and
-key** — it is saved into `config.json` and appears in the menu next time, so you only
-describe it once.
+Baton runs a full-screen terminal interface powered by [OpenTUI](https://opentui.com):
 
-Wire format: Command Code and Claude use **anthropic**; everything else is **openai**
-(chat-completions compatible). Base URLs are built in and displayed in the menu; keys live
-in `~/.baton/keys.json` (mode 600) with environment variables as a fallback
-(`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, …).
+```
+       █▄▄ ▄▀█ ▀█▀ █▀█ █▄ █
+       █▄█ █▀█  █  █▄█ █ ▀█
 
-## Slash commands
+               alex   ·   OpenCode Go   ·   deepseek-v4.1-flash   ·   v0.1.0
 
-Inside `baton chat`:
+ you  ›  change the accent color to green
 
-| Command | What it does |
-|---------|--------------|
-| `/help` | list everything |
-| `/status` | agent, provider, model, key, session, tool policy |
-| `/model [name]` `/models` | show/switch the model, or list the provider's models |
-| `/provider [id]` `/key <p> <k>` | switch provider, save a key |
-| `/yes` | toggle auto-approve for tools |
-| `/clear` `/resume [id]` | conversation history |
-| `/remember <text>` `/context` | memory |
-| `/cost` | price the next request |
-| `/send <to> [type] <text>` `/inbox` | the relay to the other agent |
-| `/update` | update baton itself |
-| `/quit` | leave |
+ baton
+ EDIT styles.css +2 -2
+   └ edited /home/mxgamecoder/test/styles.css +2 -2
+      - --accent: #ff6fb5;
+      - --glow: #8a7bff;
+      + --accent: #4ade80;
+      + --glow: #16a34a;
 
-## Tools
+ Thought for 3s ▸  (ctrl+o or /thinking to view)
 
-`read_file` · `write_file` · `edit_file` · `list_dir` · `glob` · `grep` · `shell`
+ I updated the accent colors to emerald green across styles.css.
 
-Writes and shell commands ask for confirmation unless you run with `--yes` or toggle
-`/yes`.
+ ┌─ message ─────────────────────────────────────────────────────────────────┐
+ │ Ask anything...   / commands   @ files                                    │
+ └───────────────────────────────────────────────────────────────────────────┘
+ 20260913-231440  ·  BUILD  ·  12 msgs  ·  17.6k tokens
+```
 
-## The two-agent relay
+### Keybindings & Shortcuts
+- **Enter**: Send message.
+- **`ctrl+o`**: Open full-screen conversation transcript (scrollable history, full thinking/reasoning blocks, complete error logs).
+- **Esc**: Interrupt thinking/generation or close overlays.
+- **`/`**: Open command picker.
+- **`@`**: File picker / attachment.
 
-The second job. Two Baton agents (the two panes) hand work to each other over a local
-relay — append-only log, long-poll daemon, hop cap so nothing loops, MCP server for native
-tool access. See `adapters/AGENTS.md` for the protocol, and `baton console` for the relay
-control view.
+---
 
+## Project Structure (`.baton/`)
+
+When working inside a project, Baton automatically initializes `.baton/` (and adds it to `.gitignore`):
+
+```
+my-project/
+├── .baton/
+│   ├── plans/          # Implementation plans generated by agents
+│   ├── walkthroughs/   # Walkthroughs, changelogs, and summaries
+│   ├── chats/          # Project-isolated conversation sessions
+│   └── memory.json     # Facts remembered specifically for this project
+├── src/
+└── package.json
+```
+
+Sessions and memory are scoped per project, ensuring facts or chat logs from one project never leak into another.
+
+---
+
+## Slash Commands
+
+Type `/` or a command name in the message input:
+
+| Command | Description |
+|---------|-------------|
+| `/undo` | Revert the last file change (`edit_file` / `write_file`) made by the agent |
+| `/thinking` | Toggle inline thinking visibility (collapsed badge vs full inline display) |
+| `/plan` | Switch to plan mode (read-only exploration, no file modifications) |
+| `/build` | Switch to build mode (full tool execution) |
+| `/sessions` | Switch or resume saved sessions for this project (`ctrl+d` to delete) |
+| `/new` | Start a fresh session in the current project |
+| `/compact` | Summarize conversation history to free context window |
+| `/model` | Switch model on the fly |
+| `/provider` | Switch or connect a new provider (OpenAI, Anthropic, DeepSeek, custom API) |
+| `/cost` | View token usage and estimated cost for the current session |
+| `/send` | Send a relay handoff message to the teammate agent |
+| `/inbox` | Check messages received from the teammate agent |
+| `/clear` | Clear the current conversation transcript |
+| `/quit` | Exit Baton |
+
+---
+
+## Model Providers
+
+Baton supports:
+- **Recommended**: Command Code, OpenCode Go, OpenCode Zen, Claude (Anthropic).
+- **Frontier Models**: OpenAI (GPT-4o), Google Gemini, xAI (Grok), Mistral.
+- **Open & Fast**: DeepSeek (Chat & Reasoner), Kimi (Moonshot), Groq, Together AI, Fireworks AI, SiliconFlow, Alibaba Qwen.
+- **Local (No API Key)**: Ollama, LM Studio, vLLM.
+- **Gateways & Custom**: OpenRouter, LiteLLM, Vercel AI Gateway, or any custom OpenAI/Anthropic-compatible endpoint.
+
+Provider configuration:
 ```bash
-baton console     # slash commands: /send /inbox /model /cmd /run /kill
-baton cmd <agent> model=deepseek-chat
-baton status / log / logs / kill
+baton providers                     # List providers and key statuses
+baton key <provider> <api-key>      # Save API key (stored in ~/.baton/keys.json, chmod 600)
+baton models --provider <provider>  # Fetch available models live from provider
 ```
 
-## Config (`~/.baton/config.json`)
+---
 
-Each agent has a unique `name` and a `role` (`left` / `right`, the pane it lives in). You can
-address it by either — `baton send --to Nova` or `baton send --to left`. A fresh config names them Nova (left) and Rex (right); an older
-config still named "left"/"right" asks for a name inside the app on the next launch.
+## Multi-Agent Relay
+
+The two agents coordinate through a structured relay protocol:
+- **`handoff`**: Pass an actionable task to the teammate with expected outcomes.
+- **`done`**: Notify that a delegated task was finished and verified.
+- **`fyi`**: Share observations, findings, or port discoveries without transferring turn ownership.
+
+The daemon ensures no runaway loops (max hop count) and isolates relay messages strictly to the working project.
+
+---
+
+## Configuration (`~/.baton/config.json`)
 
 ```json
 {
   "agents": [
-    { "name": "Nova", "role": "left",  "provider": "command-code", "model": "claude-sonnet-4-6" },
-    { "name": "Rex",  "role": "right", "provider": "deepseek",     "model": "deepseek-chat" }
+    { "name": "alex", "provider": "opencode-go", "model": "deepseek-v4.1-flash", "role": "left" },
+    { "name": "nova", "provider": "opencode-go", "model": "deepseek-v4.1-flash", "role": "right" }
   ],
-  "defaultProvider": "command-code",
-  "defaultModel": "claude-sonnet-4-6",
+  "defaultProvider": "opencode-go",
+  "defaultModel": "deepseek-v4.1-flash",
   "autoApprove": false,
   "port": 7331,
   "maxHop": 8
 }
 ```
 
-An agent with no `command` runs Baton's own agent. An agent with a `command` launches that
-CLI instead — so you can still point a pane at any external tool if you want.
-
-## Status
-
-Working: own agent (OpenAI + Anthropic wire formats), streaming, tool loop, provider
-registry, key store, model fetching, provider wizard, tmux/Windows Terminal/WezTerm/PTY
-launcher, relay (log + daemon + MCP), memory, attachments, cost router, port probe,
-guardrails.
-
-Not yet: a full-screen TUI (the chat is line-based), a `/` command palette popup, and
-`/update` needs the package published to npm.
+---
 
 ## License
 

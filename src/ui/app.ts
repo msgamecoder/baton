@@ -65,7 +65,7 @@ const THEMES: Record<string, Theme> = {
 
 export interface ChatUi {
   user(text: string): void;
-  assistant(): { set(text: string): void; append(chunk: string): void; done(): void };
+  assistant(): { set(text: string): void; append(chunk: string): void; appendReasoning?(chunk: string): void; done(): void };
   line(text: string, color?: string): void;
   wrap(text: string, color?: string): void;
   markdown(text: string, color?: string): void;
@@ -97,6 +97,8 @@ const COMMANDS: Command[] = [
   { group: 'session', label: 'compact', detail: 'summarise the conversation to free context' },
   { group: 'session', label: 'export', detail: 'export this session (md, html, json)' },
   { group: 'session', label: 'clear', detail: 'forget this conversation' },
+  { group: 'session', label: 'undo', detail: 'revert the last file change made by this agent' },
+  { group: 'session', label: 'thinking', detail: 'toggle thinking visibility inline or collapsed' },
   { group: 'session', label: 'quit', detail: 'exit' },
 
   { group: 'model', label: 'model', detail: 'switch model' },
@@ -496,6 +498,15 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   };
 
   let thinkingOn = true;
+  let showThinking = false;
+
+  const formatDuration = (sec: number): string => {
+    if (sec < 60) return `${sec.toFixed(1)}s`;
+    const m = Math.floor(sec / 60);
+    const rem = Math.floor(sec % 60);
+    return `${m}m ${rem}s`;
+  };
+
   let thinkingTimer: ReturnType<typeof setInterval> | null = null;
   let turnStarted = 0;
   let totalThinking = 0;
@@ -534,7 +545,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (!thinkingOn) return;
     const word = THINK_WORDS[Math.floor(Math.random() * THINK_WORDS.length)];
     const paint = (): void => {
-      status.content = `${word}… ${((Date.now() - turnStarted) / 1000).toFixed(1)}s   (esc to interrupt)`;
+      const elapsed = (Date.now() - turnStarted) / 1000;
+      status.content = `${word}… ${formatDuration(elapsed)}   (esc to interrupt)`;
     };
     paint();
     thinkingTimer = setInterval(paint, 200);
@@ -599,7 +611,32 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       addNode(new TextRenderable(renderer, { content: "baton", fg: theme.accent, height: 1, flexShrink: 0 }));
       addNode(new TextRenderable(renderer, { content: "", fg: theme.dim, height: 1, flexShrink: 0 }));
       let node: TextRenderable | MarkdownRenderable | null = null;
+      let thoughtNode: TextRenderable | null = null;
       let buffer = '';
+      let reasoningBuffer = '';
+      const thoughtStart = Date.now();
+
+      const paintReasoning = (): void => {
+        if (!reasoningBuffer) return;
+        const elapsed = Math.max(1, Math.round((Date.now() - thoughtStart) / 1000));
+        if (!thoughtNode) {
+          thoughtNode = new TextRenderable(renderer, {
+            content: '',
+            fg: '#7a7a9a',
+            wrapMode: 'word',
+            flexShrink: 0,
+            selectable: true,
+          });
+          addNode(thoughtNode);
+        }
+        if (showThinking) {
+          thoughtNode.content = `Thought for ${elapsed}s ▸\n` + reasoningBuffer.trim() + '\n';
+        } else {
+          thoughtNode.content = `Thought for ${elapsed}s ▸  (ctrl+o or /thinking to view)`;
+        }
+        keepBottom();
+      };
+
       const paint = (): void => {
         if (buffer.length === 0) return;
         if (!node) {
@@ -642,8 +679,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
           buffer += chunk;
           paint();
         },
+        appendReasoning(chunk) {
+          stopThinking();
+          reasoningBuffer += chunk;
+          paintReasoning();
+        },
         done() {
           lastReply = buffer;
+          if (thoughtNode && !showThinking && reasoningBuffer) {
+            const elapsed = Math.max(1, Math.round((Date.now() - thoughtStart) / 1000));
+            thoughtNode.content = `Thought for ${elapsed}s ▸  (ctrl+o to expand)`;
+          }
           addNode(new TextRenderable(renderer, { content: "", fg: theme.dim, height: 1, flexShrink: 0 }));
           setFooter();
         },
@@ -1514,11 +1560,17 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       setFooter();
       return;
     }
+    if (name === 'undo') {
+      const { popUndo } = await import('../agent/tools.ts');
+      const res = popUndo();
+      ui.line(res.message, res.ok ? '#7fd1b9' : '#e06c75');
+      return;
+    }
     if (name === 'thinking') {
-      thinkingOn = !thinkingOn;
+      showThinking = !showThinking;
       ui.line(
-        thinkingOn ? 'thinking on — the indicator and its timing will show' : 'thinking off',
-        thinkingOn ? theme.user : theme.dim,
+        showThinking ? 'thinking display: ON (expanded inline in message body)' : 'thinking display: OFF (collapsed badge — press ctrl+o for full)',
+        showThinking ? theme.user : theme.dim,
       );
       return;
     }
@@ -1752,6 +1804,14 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         transcriptLine('', theme.dim);
         transcriptLine(`you  ›  ${text}`, theme.user);
       } else if (message.role === 'assistant') {
+        if (message.reasoning) {
+          transcriptLine('', theme.dim);
+          transcriptLine('· reasoning ·', '#7a7a9a');
+          for (const rLine of message.reasoning.split('\n')) {
+            transcriptLine(`  ${rLine}`, '#7a7a9a');
+          }
+          transcriptLine('', theme.dim);
+        }
         if (text) transcriptLine(`baton  ›  ${text}`, theme.text);
         for (const call of message.toolCalls ?? []) {
           const label = session.toolLabel(call);
@@ -2023,7 +2083,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       .finally(() => {
         const elapsed = turnStarted ? (Date.now() - turnStarted) / 1000 : 0;
         stopThinking();
-        if (thinkingOn && elapsed > 0.4) ui.line(`· ${elapsed.toFixed(1)}s`, theme.dim);
+        if (thinkingOn && elapsed > 0.4) ui.line(`· ${formatDuration(elapsed)}`, theme.dim);
         totalThinking += elapsed;
         busy = false;
         assertTitle();

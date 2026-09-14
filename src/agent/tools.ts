@@ -1,8 +1,32 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import type { ToolSpec, ToolResult } from '../providers/types.ts';
 import { createTask, tasksSummary, updateTask, type TaskStatus } from './tasks.ts';
+
+export interface UndoRecord {
+  path: string;
+  previousContent: string | null;
+  ts: number;
+}
+
+export const undoStack: UndoRecord[] = [];
+
+export function popUndo(): { ok: boolean; message: string } {
+  const item = undoStack.pop();
+  if (!item) return { ok: false, message: "nothing to undo" };
+  try {
+    if (item.previousContent === null) {
+      if (existsSync(item.path)) unlinkSync(item.path);
+      return { ok: true, message: `undo: removed newly created ${item.path}` };
+    } else {
+      writeFileSync(item.path, item.previousContent, "utf8");
+      return { ok: true, message: `undo: reverted ${item.path}` };
+    }
+  } catch (err) {
+    return { ok: false, message: `undo failed: ${err instanceof Error ? err.message : "error"}` };
+  }
+}
 
 export interface ToolContext {
   cwd: string;
@@ -318,8 +342,10 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
       case 'write_file': {
         if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
         const path = resolvePath(ctx.cwd, String(args.path ?? ''));
+        const previous = existsSync(path) ? readFileSync(path, 'utf8') : null;
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(args.content ?? ''));
+        undoStack.push({ path, previousContent: previous, ts: Date.now() });
         const written = String(args.content ?? '').split('\n');
         return { output: `wrote ${path}  +${written.length} lines` };
       }
@@ -335,6 +361,7 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
           return { output: `old_string appears ${count} times — pass replace_all or add context`, isError: true };
         }
         if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
+        undoStack.push({ path, previousContent: original, ts: Date.now() });
         const updated = args.replace_all
           ? original.split(needle).join(String(args.new_string ?? ''))
           : original.replace(needle, String(args.new_string ?? ''));
@@ -442,16 +469,41 @@ export async function runTool(name: string, args: Record<string, unknown>, ctx: 
         if (ctx.confirm && !(await ctx.confirm(name, args))) return { output: 'denied by user', isError: true };
         const command = String(args.command ?? '');
         const timeout = typeof args.timeout_ms === 'number' ? args.timeout_ms : 120000;
-        const result = spawnSync(command, {
-          shell: true,
-          cwd: ctx.cwd,
-          encoding: 'utf8',
-          timeout,
-          maxBuffer: 10 * 1024 * 1024,
+        return new Promise((resolve) => {
+          const child = spawn(command, {
+            shell: true,
+            cwd: ctx.cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let stdout = '';
+          let stderr = '';
+          let timedOut = false;
+          const timer = setTimeout(() => {
+            timedOut = true;
+            try { child.kill('SIGTERM'); } catch {}
+          }, timeout);
+
+          child.stdout?.on('data', (chunk) => {
+            if (stdout.length < 10 * 1024 * 1024) stdout += chunk.toString('utf8');
+          });
+          child.stderr?.on('data', (chunk) => {
+            if (stderr.length < 10 * 1024 * 1024) stderr += chunk.toString('utf8');
+          });
+          child.on('error', (err) => {
+            clearTimeout(timer);
+            resolve({ output: `error: ${err.message}`, isError: true });
+          });
+          child.on('close', (code) => {
+            clearTimeout(timer);
+            if (timedOut) {
+              resolve({ output: `timeout after ${timeout}ms`, isError: true });
+              return;
+            }
+            const out = [stdout, stderr].filter(Boolean).join('\n').trim();
+            const exitCode = code ?? 0;
+            resolve({ output: truncate(`exit ${exitCode}\n${out || '(no output)'}`), isError: exitCode !== 0 });
+          });
         });
-        const out = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
-        const code = result.status ?? -1;
-        return { output: truncate(`exit ${code}\n${out || '(no output)'}`), isError: code !== 0 };
       }
       default:
         return { output: `unknown tool: ${name}`, isError: true };

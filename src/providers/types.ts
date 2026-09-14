@@ -28,6 +28,7 @@ export interface UserMessage {
 export interface AssistantMessage {
   role: 'assistant';
   content: string;
+  reasoning?: string;
   toolCalls?: ToolCall[];
 }
 

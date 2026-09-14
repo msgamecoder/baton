@@ -23,6 +23,7 @@ export function providerHeaders(provider: Provider, apiKey?: string): Record<str
 
 export interface StreamResult {
   text: string;
+  reasoning?: string;
   toolCalls: ToolCall[];
   stopReason?: string;
   usage: { inputTokens: number; outputTokens: number };
@@ -36,6 +37,7 @@ export interface StreamOptions {
   tools?: ToolSpec[];
   signal?: AbortSignal;
   onText?: (chunk: string) => void;
+  onReasoning?: (chunk: string) => void;
   onRetry?: (attempt: number, message: string) => void;
   maxTokens?: number;
 }
@@ -60,13 +62,18 @@ export function newStreamState(): StreamResult {
   return { text: '', toolCalls: [], usage: { inputTokens: 0, outputTokens: 0 } };
 }
 
-export function applyOpenAIChunk(state: StreamResult, json: any, onText?: (t: string) => void): void {
+export function applyOpenAIChunk(state: StreamResult, json: any, onText?: (t: string) => void, onReasoning?: (r: string) => void): void {
   if (json?.usage) {
     if (typeof json.usage.prompt_tokens === 'number') state.usage.inputTokens = json.usage.prompt_tokens;
     if (typeof json.usage.completion_tokens === 'number') state.usage.outputTokens = json.usage.completion_tokens;
   }
   const choice = json?.choices?.[0];
   const delta = choice?.delta;
+  const reasoning = delta?.reasoning_content ?? delta?.reasoning ?? delta?.thought;
+  if (typeof reasoning === 'string' && reasoning) {
+    state.reasoning = (state.reasoning ?? '') + reasoning;
+    onReasoning?.(reasoning);
+  }
   if (typeof delta?.content === 'string' && delta.content) {
     state.text += delta.content;
     onText?.(delta.content);
@@ -84,7 +91,7 @@ export function applyOpenAIChunk(state: StreamResult, json: any, onText?: (t: st
   if (choice?.finish_reason) state.stopReason = choice.finish_reason;
 }
 
-export function applyAnthropicEvent(state: StreamResult, evt: any, onText?: (t: string) => void): void {
+export function applyAnthropicEvent(state: StreamResult, evt: any, onText?: (t: string) => void, onReasoning?: (r: string) => void): void {
   if (evt?.type === 'message_start' && evt.message?.usage?.input_tokens) {
     state.usage.inputTokens = evt.message.usage.input_tokens;
   }
@@ -96,6 +103,10 @@ export function applyAnthropicEvent(state: StreamResult, evt: any, onText?: (t: 
     state.toolCalls[index] = { id: evt.content_block.id, name: evt.content_block.name, arguments: '' };
   }
   if (evt?.type === 'content_block_delta') {
+    if (evt.delta?.type === 'thinking_delta' && evt.delta.thinking) {
+      state.reasoning = (state.reasoning ?? '') + evt.delta.thinking;
+      onReasoning?.(evt.delta.thinking);
+    }
     if (evt.delta?.type === 'text_delta' && evt.delta.text) {
       state.text += evt.delta.text;
       onText?.(evt.delta.text);
@@ -244,8 +255,9 @@ export async function streamChat(options: StreamOptions): Promise<StreamResult> 
         } catch {
           continue;
         }
-        if (provider.format === 'anthropic') applyAnthropicEvent(state, json, onText);
-        else applyOpenAIChunk(state, json, onText);
+        const { onReasoning } = options;
+        if (provider.format === 'anthropic') applyAnthropicEvent(state, json, onText, onReasoning);
+        else applyOpenAIChunk(state, json, onText, onReasoning);
       }
     }
   };
