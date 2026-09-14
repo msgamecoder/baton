@@ -13,6 +13,29 @@ back and forth instead of you relaying by hand.
 - **Two sides, two setups.** Left pane and right pane can each use a different provider,
   key and model.
 
+![Baton — two agents side by side, each with its own name and pane](docs/interface.png)
+
+## What Baton solves
+
+Working with two AI agents normally makes **you** the messenger: copy the error out of one
+chat, paste it into the other, copy the answer back, repeat. You lose the context, the file
+the first agent just touched, and your own attention.
+
+Baton takes you out of the middle:
+
+- **The agents hand work to each other.** A local relay (an append-only log plus a small
+  daemon) lets one side send a handoff, question or error to the other and get an answer,
+  with a hop cap so it can never loop. This is the difference from just opening two
+  terminals: they actually pass the work.
+- **You stay in charge.** Both conversations are on screen at once — step in whenever you
+  want, or let them continue. `ctrl+o` opens the full-screen transcript of the conversation
+  without the input box in the way.
+- **One tool, your own keys.** No second CLI and no vendor lock-in: pick a provider, paste
+  a key, and both panes are your own agents, each with its own name (`Nova · left`,
+  `Rex · right`) and model.
+- **It works on the real project.** The agent reads, edits and runs things in your working
+  directory, and each project keeps its own sessions and its own relay traffic.
+
 ## Install
 
 Requires **Node.js >= 22.6** (Baton runs TypeScript directly — no build step, no runtime

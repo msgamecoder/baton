@@ -78,6 +78,9 @@ type Flags = Record<string, FlagValue>;
 
 const DAEMON_PID_PATH = join(BATON_HOME, 'daemon.pid');
 
+// show "baton" in the terminal tab / process list rather than "node"
+process.title = 'baton';
+
 function parseArgs(argv: string[]): { flags: Flags; positional: string[] } {
   const flags: Flags = {};
   const positional: string[] = [];
@@ -202,7 +205,7 @@ function prepare(partial: Record<string, unknown>): Message {
     typeof partial.to === 'string' && partial.to !== '*'
       ? resolveAgent(config.agents, partial.to)?.name ?? partial.to
       : partial.to;
-  const message = validateMessage({ ...partial, from, to });
+  const message = validateMessage({ project: process.cwd(), ...partial, from, to });
   if (message.attachments) {
     message.attachments = message.attachments.map((a) => (existsSync(a.path) ? storeFile(a.path) : a));
   }
@@ -238,18 +241,19 @@ async function resolveInput(flags: Flags): Promise<Record<string, unknown> | und
 }
 
 async function collectInbox(agent: string, waitMs: number, peek: boolean): Promise<Message[]> {
+  const project = process.cwd();
   if (await daemonUp()) {
-    const remote = await remoteInbox(agent, waitMs, peek);
+    const remote = await remoteInbox(agent, waitMs, peek, project);
     if (remote) return remote;
   }
   const aliases = aliasesFor(agent);
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const messages = inbox(agent, getCursor(agent), aliases);
+    const messages = inbox(agent, getCursor(agent, project), aliases, project);
     if (messages.length > 0 || Date.now() >= deadline) {
       if (messages.length > 0 && !peek) {
         const last = messages[messages.length - 1];
-        setCursor(agent, { ts: last.ts, id: last.id });
+        setCursor(agent, { ts: last.ts, id: last.id }, project);
       }
       return messages;
     }
@@ -311,9 +315,10 @@ async function cmdInbox(flags: Flags): Promise<void> {
 async function cmdAck(flags: Flags, positional: string[]): Promise<void> {
   const agent = requireAgent(flags);
   const id = positional[0] ?? str(flags, 'id');
+  const project = process.cwd();
 
   if (await daemonUp()) {
-    const ok = await remoteAck(agent, id);
+    const ok = await remoteAck(agent, id, project);
     if (ok) {
       console.log(id ? `acked ${agent} up to ${id}` : `acked ${agent}`);
       return;
@@ -323,13 +328,13 @@ async function cmdAck(flags: Flags, positional: string[]): Promise<void> {
   if (id) {
     const found = readMessages().find((m) => m.id === id);
     if (!found) throw new BatonError(`no message with id ${id}`);
-    setCursor(agent, { ts: found.ts, id: found.id });
+    setCursor(agent, { ts: found.ts, id: found.id }, project);
     console.log(`acked ${agent} up to ${id}`);
     return;
   }
-  const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
+  const messages = inbox(agent, getCursor(agent, project), aliasesFor(agent), project);
   const last = messages[messages.length - 1];
-  if (last) setCursor(agent, { ts: last.ts, id: last.id });
+  if (last) setCursor(agent, { ts: last.ts, id: last.id }, project);
   console.log(`${agent}: ${messages.length ? `acked ${messages.length}` : 'nothing to ack'}`);
 }
 
@@ -351,7 +356,7 @@ async function cmdStatus(flags: Flags): Promise<void> {
           role: a.role ?? null,
           command: a.command,
           model: a.model ?? null,
-          pending: pendingCount(a.name, aliasesFor(a.name)),
+          pending: pendingCount(a.name, aliasesFor(a.name), process.cwd()),
         })),
         memory: allMemory().length,
       }),
@@ -369,7 +374,7 @@ async function cmdStatus(flags: Flags): Promise<void> {
     const model = agent.model ? ` model=${agent.model}` : '';
     const command = agent.command ?? '';
     console.log(
-      `  ${formatAgent(agent).padEnd(20)} ${command.padEnd(14)}${model}  pending: ${pendingCount(agent.name, aliasesFor(agent.name))}`,
+      `  ${formatAgent(agent).padEnd(20)} ${command.padEnd(14)}${model}  pending: ${pendingCount(agent.name, aliasesFor(agent.name), process.cwd())}`,
     );
   }
   const last = messages[messages.length - 1];

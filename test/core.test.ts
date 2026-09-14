@@ -90,6 +90,21 @@ test('relay inbox matches an agent by role as well as name', () => {
   assert.ok(!summaries.includes('from myself'), 'my own alias must not deliver to me');
 });
 
+test('relay traffic is scoped to a project', () => {
+  appendMessage(validateMessage({ from: 'peer', to: 'alex', summary: 'p1', project: '/project/one' }));
+  appendMessage(validateMessage({ from: 'peer', to: 'alex', summary: 'p2', project: '/project/two' }));
+
+  const one = inbox('alex', { ts: 0, id: '' }, [], '/project/one').map((m) => m.summary);
+  const two = inbox('alex', { ts: 0, id: '' }, [], '/project/two').map((m) => m.summary);
+
+  assert.ok(one.includes('p1'), 'the project sees its own message');
+  assert.ok(!one.includes('p2'), 'and not the other project\'s');
+  assert.ok(two.includes('p2'));
+  assert.ok(!two.includes('p1'));
+  // no project given = no filtering (older callers / tests)
+  assert.ok(inbox('alex', { ts: 0, id: '' }).some((m) => m.summary === 'p1'));
+});
+
 test('provider session header follows the baton session, not the process', async () => {
   const { providerHeaders, setProviderSession } = await import('../src/providers/client.ts');
   const provider = {
@@ -148,6 +163,32 @@ test('history sanitizer leaves a complete exchange untouched', async () => {
     { role: 'assistant', content: 'done' },
   ];
   assert.deepEqual(sanitizeHistory(input), input);
+});
+
+test('history sanitizer keeps every result of a multi-call message', async () => {
+  const { sanitizeHistory } = await import('../src/agent/loop.ts');
+  const cleaned = sanitizeHistory([
+    { role: 'user', content: 'q' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [
+        { id: 'a', name: 'shell', arguments: '{}' },
+        { id: 'b', name: 'shell', arguments: '{}' },
+      ],
+    },
+    { role: 'tool', content: 'one', toolCallId: 'a', name: 'shell' },
+    { role: 'tool', content: 'two', toolCallId: 'b', name: 'shell' },
+  ]);
+  assert.equal(cleaned.length, 4, 'both results survive');
+  assert.deepEqual(
+    cleaned[1].toolCalls?.map((call) => call.id),
+    ['a', 'b'],
+  );
+  assert.deepEqual(
+    cleaned.slice(2).map((message) => message.toolCallId),
+    ['a', 'b'],
+  );
 });
 
 test('history sanitizer drops tool calls with no id', async () => {

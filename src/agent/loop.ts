@@ -95,14 +95,8 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
     const message = messages[i];
     if (!message) continue;
 
-    if (message.role === 'tool') {
-      const previous = out[out.length - 1];
-      const answers =
-        previous?.role === 'assistant' && (previous.toolCalls ?? []).some((call) => call.id === message.toolCallId);
-      if (!answers) continue;
-      out.push(message);
-      continue;
-    }
+    // tool messages are only ever emitted with their assistant message below
+    if (message.role === 'tool') continue;
 
     if (message.role === 'assistant' && message.toolCalls?.length) {
       const run: ChatMessage[] = [];
@@ -111,17 +105,28 @@ export function sanitizeHistory(messages: ChatMessage[]): ChatMessage[] {
         run.push(messages[next]);
         next += 1;
       }
-      const answered = new Set(run.map((entry) => entry.toolCallId));
+
+      // keep each call together with its own result, in order — a call with no
+      // id or a repeated id can never satisfy the pairing rule, so drop it
       const seen = new Set<string>();
-      // a call with no id (older history) or a repeated id can never satisfy the
-      // pairing rule, so it is dropped rather than sent
-      const kept = message.toolCalls.filter((call) => {
-        if (!call.id || seen.has(call.id) || !answered.has(call.id)) return false;
+      const kept: ToolCall[] = [];
+      const results: ChatMessage[] = [];
+      for (const call of message.toolCalls) {
+        if (!call.id || seen.has(call.id)) continue;
+        const result = run.find((entry) => entry.toolCallId === call.id);
+        if (!result) continue;
         seen.add(call.id);
-        return true;
-      });
-      if (!kept.length && !message.content) continue;
-      out.push(kept.length ? { ...message, toolCalls: kept } : { role: 'assistant', content: message.content });
+        kept.push(call);
+        results.push(result);
+      }
+
+      if (!kept.length) {
+        if (message.content) out.push({ role: 'assistant', content: message.content });
+      } else {
+        out.push({ ...message, toolCalls: kept });
+        for (const result of results) out.push(result);
+      }
+      i = next - 1; // consume the tool run in one go
       continue;
     }
 

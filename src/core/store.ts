@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { BATON_HOME, CURSOR_DIR, LOG_PATH, MEDIA_DIR, MEMORY_DIR } from './paths.ts';
 import { parseMessageLine, type Message } from './schema.ts';
 
@@ -41,17 +42,26 @@ function startIndex(all: Message[], cursor: Cursor): number {
   return byTs >= 0 ? byTs : 0;
 }
 
-export function inbox(agent: string, cursor: Cursor, aliases: string[] = []): Message[] {
+export function inbox(agent: string, cursor: Cursor, aliases: string[] = [], project?: string): Message[] {
   const self = new Set([agent, ...aliases]);
   const targets = new Set([...self, '*']);
   const all = readMessages();
   return all
     .slice(startIndex(all, cursor))
-    .filter((m) => targets.has(m.to) && !self.has(m.from));
+    .filter(
+      (m) => targets.has(m.to) && !self.has(m.from) && (project === undefined || m.project === project),
+    );
 }
 
-export function getCursor(agent: string): Cursor {
-  const path = join(CURSOR_DIR, `${agent}.json`);
+/** Relay position is per project, so two projects' agents never share a cursor. */
+function cursorPath(agent: string, project?: string): string {
+  if (!project) return join(CURSOR_DIR, `${agent}.json`);
+  const bucket = createHash('sha1').update(project).digest('hex').slice(0, 12);
+  return join(CURSOR_DIR, bucket, `${agent}.json`);
+}
+
+export function getCursor(agent: string, project?: string): Cursor {
+  const path = cursorPath(agent, project);
   if (!existsSync(path)) return { ...EMPTY_CURSOR };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<Cursor>;
@@ -61,13 +71,15 @@ export function getCursor(agent: string): Cursor {
   }
 }
 
-export function setCursor(agent: string, cursor: Cursor): void {
+export function setCursor(agent: string, cursor: Cursor, project?: string): void {
   ensureHome();
-  writeFileSync(join(CURSOR_DIR, `${agent}.json`), JSON.stringify(cursor));
+  const path = cursorPath(agent, project);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(cursor));
 }
 
-export function pendingCount(agent: string, aliases: string[] = []): number {
-  return inbox(agent, getCursor(agent), aliases).length;
+export function pendingCount(agent: string, aliases: string[] = [], project?: string): number {
+  return inbox(agent, getCursor(agent, project), aliases, project).length;
 }
 
 export function tail(n: number): Message[] {

@@ -7,6 +7,7 @@ import { DAEMON_PORT } from '../core/paths.ts';
 
 interface Waiter {
   agent: string;
+  project?: string;
   resolve: (messages: Message[]) => void;
   timer: NodeJS.Timeout;
 }
@@ -36,7 +37,7 @@ function aliasesFor(agent: string): string[] {
 
 function wakeWaiters(): void {
   for (const waiter of [...waiters]) {
-    const messages = inbox(waiter.agent, getCursor(waiter.agent), aliasesFor(waiter.agent));
+    const messages = inbox(waiter.agent, getCursor(waiter.agent, waiter.project), aliasesFor(waiter.agent), waiter.project);
     if (messages.length === 0) continue;
     clearTimeout(waiter.timer);
     waiters.delete(waiter);
@@ -66,13 +67,14 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
 
     if (req.method === 'GET' && url.pathname === '/status') {
       const config = loadConfig();
+      const project = url.searchParams.get('project') ?? undefined;
       return json(res, 200, {
         ok: true,
         messages: readMessages().length,
         agents: config.agents.map((a) => ({
           name: a.name,
           role: a.role,
-          pending: pendingCount(a.name, aliasesFor(a.name)),
+          pending: pendingCount(a.name, aliasesFor(a.name), project),
         })),
         presence: [...presence.entries()].map(([agent, ts]) => ({ agent, lastSeen: ts })),
       });
@@ -98,17 +100,17 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
     }
 
     if (req.method === 'POST' && url.pathname === '/ack') {
-      const body = JSON.parse((await readBody(req)) || '{}') as { agent?: string; id?: string };
+      const body = JSON.parse((await readBody(req)) || '{}') as { agent?: string; id?: string; project?: string };
       if (!body.agent) return json(res, 400, { error: 'agent required' });
-      const current = getCursor(body.agent);
+      const current = getCursor(body.agent, body.project);
       if (body.id) {
         const found = readMessages().find((m) => m.id === body.id);
         if (!found) return json(res, 404, { error: 'no such message' });
-        setCursor(body.agent, { ts: found.ts, id: found.id });
+        setCursor(body.agent, { ts: found.ts, id: found.id }, body.project);
       } else {
-        const messages = inbox(body.agent, current, aliasesFor(body.agent));
+        const messages = inbox(body.agent, current, aliasesFor(body.agent), body.project);
         const last = messages[messages.length - 1];
-        if (last) setCursor(body.agent, { ts: last.ts, id: last.id });
+        if (last) setCursor(body.agent, { ts: last.ts, id: last.id }, body.project);
       }
       return json(res, 200, { ok: true });
     }
@@ -118,25 +120,27 @@ export function startDaemon(port = DAEMON_PORT): ReturnType<typeof createServer>
       if (!agent) return json(res, 400, { error: 'agent required' });
       const waitMs = Number(url.searchParams.get('wait') ?? '0');
       const peek = url.searchParams.get('peek') === '1';
+      const project = url.searchParams.get('project') ?? undefined;
       const aliases = aliasesFor(agent);
 
       const deliver = (messages: Message[]) => {
         if (!peek && messages.length > 0) {
           const last = messages[messages.length - 1];
-          setCursor(agent, { ts: last.ts, id: last.id });
+          setCursor(agent, { ts: last.ts, id: last.id }, project);
         }
         json(res, 200, { messages });
       };
 
-      const current = inbox(agent, getCursor(agent), aliases);
+      const current = inbox(agent, getCursor(agent, project), aliases, project);
       if (current.length > 0 || waitMs <= 0) return deliver(current);
 
       const waiter: Waiter = {
         agent,
+        project,
         resolve: deliver,
         timer: setTimeout(() => {
           waiters.delete(waiter);
-          deliver(inbox(agent, getCursor(agent), aliases));
+          deliver(inbox(agent, getCursor(agent, project), aliases, project));
         }, Math.min(waitMs, 120000)),
       };
       waiters.add(waiter);

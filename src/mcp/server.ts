@@ -101,6 +101,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       const message = validateMessage({
         from: selfAgent(),
         to: toRef === '*' ? '*' : (resolveAgent(config.agents, toRef)?.name ?? toRef),
+        project: process.cwd(),
         summary: args.summary,
         type: args.type,
         priority: args.priority,
@@ -118,23 +119,25 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
     }
     case 'relay_inbox': {
       const agent = canonical(args.agent);
-      const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
+      const project = process.cwd();
+      const messages = inbox(agent, getCursor(agent, project), aliasesFor(agent), project);
       if (!args.peek && messages.length > 0) {
         const last = messages[messages.length - 1];
-        setCursor(agent, { ts: last.ts, id: last.id });
+        setCursor(agent, { ts: last.ts, id: last.id }, project);
       }
       return messages;
     }
     case 'relay_ack': {
       const agent = canonical(args.agent);
+      const project = process.cwd();
       if (args.id) {
         const found = readMessages().find((m) => m.id === args.id);
         if (!found) throw new BatonError(`no message with id ${String(args.id)}`);
-        setCursor(agent, { ts: found.ts, id: found.id });
+        setCursor(agent, { ts: found.ts, id: found.id }, project);
       } else {
-        const messages = inbox(agent, getCursor(agent), aliasesFor(agent));
+        const messages = inbox(agent, getCursor(agent, project), aliasesFor(agent), project);
         const last = messages[messages.length - 1];
-        if (last) setCursor(agent, { ts: last.ts, id: last.id });
+        if (last) setCursor(agent, { ts: last.ts, id: last.id }, project);
       }
       return { ok: true };
     }
@@ -145,7 +148,7 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
         agents: config.agents.map((a) => ({
           name: a.name,
           role: a.role,
-          pending: pendingCount(a.name, aliasesFor(a.name)),
+          pending: pendingCount(a.name, aliasesFor(a.name), process.cwd()),
         })),
       };
     }

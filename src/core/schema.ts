@@ -65,6 +65,8 @@ export interface Message {
   ts: number;
   from: string;
   to: string;
+  /** the project (working directory) this message belongs to — relay traffic is per project */
+  project?: string;
   type: MessageType;
   priority: Priority;
   summary: string;
@@ -126,6 +128,7 @@ export function validateMessage(input: unknown): Message {
   };
 
   if (typeof m.body === 'string') msg.body = m.body;
+  if (typeof m.project === 'string' && m.project) msg.project = m.project;
   if (typeof m.command === 'string') msg.command = m.command;
   if (typeof m.inReplyTo === 'string') msg.inReplyTo = m.inReplyTo;
   if (typeof m.sessionRef === 'string') msg.sessionRef = m.sessionRef;

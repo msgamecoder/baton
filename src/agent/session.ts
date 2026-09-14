@@ -558,6 +558,8 @@ export function createSession(options: SessionOptions): Session {
           .filter((entry): entry is MemoryEntry => Boolean(entry));
         if (saved.length > 0) {
           ui.line(`remembered: ${saved.map((entry) => entry.text).join('   ·   ')}`, '#7fd1b9');
+          // rebuild the system prompt so this session uses the new memory from the next turn
+          if (messages.length > 0 && messages[0].role === 'system') messages[0] = system();
         }
         if (isMemoryInstruction(trimmed) && saved.length > 0) {
           persist();
@@ -606,7 +608,6 @@ export function createSession(options: SessionOptions): Session {
                 `   └ ${first}${more}`,
                 isError ? '#e06c75' : changed ? '#7fd1b9' : '#565672',
               );
-              ui.recordTool?.(`${_call.name} ${(_call.arguments ?? '').slice(0, 400)}`, output);
             },
           },
         });

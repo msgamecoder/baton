@@ -47,9 +47,11 @@ export async function remoteInbox(
   agent: string,
   waitMs: number,
   peek: boolean,
+  project?: string,
 ): Promise<Message[] | null> {
   try {
     const params = new URLSearchParams({ agent, wait: String(waitMs), peek: peek ? '1' : '0' });
+    if (project) params.set('project', project);
     const res = await withTimeout(waitMs + 4000, (signal) =>
       fetch(`${daemonBase()}/inbox?${params.toString()}`, { signal }),
     );
@@ -61,13 +63,13 @@ export async function remoteInbox(
   }
 }
 
-export async function remoteAck(agent: string, id?: string): Promise<boolean> {
+export async function remoteAck(agent: string, id?: string, project?: string): Promise<boolean> {
   try {
     const res = await withTimeout(3000, (signal) =>
       fetch(`${daemonBase()}/ack`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agent, id }),
+        body: JSON.stringify({ agent, id, project }),
         signal,
       }),
     );

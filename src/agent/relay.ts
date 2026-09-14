@@ -15,6 +15,7 @@ export async function sendRelay(from: string, to: string, text: string, type = '
     to: to === '*' ? '*' : canonical(agents, to),
     type,
     summary: text,
+    project: process.cwd(),
   });
   if (await daemonUp()) {
     const sent = await remoteSend(message);
@@ -24,19 +25,19 @@ export async function sendRelay(from: string, to: string, text: string, type = '
   return message;
 }
 
-export async function readRelayInbox(agent: string): Promise<Message[]> {
+export async function readRelayInbox(agent: string, project = process.cwd()): Promise<Message[]> {
   if (await daemonUp()) {
-    const remote = await remoteInbox(agent, 0, false);
+    const remote = await remoteInbox(agent, 0, false, project);
     if (remote) return remote;
   }
   const aliases = agentAliases(loadConfig().agents, agent).filter((ref) => ref !== agent);
-  const messages = inbox(agent, getCursor(agent), aliases);
+  const messages = inbox(agent, getCursor(agent, project), aliases, project);
   const last = messages[messages.length - 1];
-  if (last) setCursor(agent, { ts: last.ts, id: last.id });
+  if (last) setCursor(agent, { ts: last.ts, id: last.id }, project);
   return messages;
 }
 
-export async function ackRelay(agent: string, id?: string): Promise<boolean> {
-  if (await daemonUp()) return remoteAck(agent, id);
+export async function ackRelay(agent: string, id?: string, project = process.cwd()): Promise<boolean> {
+  if (await daemonUp()) return remoteAck(agent, id, project);
   return false;
 }

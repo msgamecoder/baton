@@ -69,7 +69,6 @@ export interface ChatUi {
   line(text: string, color?: string): void;
   wrap(text: string, color?: string): void;
   markdown(text: string, color?: string): void;
-  recordTool?(title: string, output: string): void;
   setModel(model: string): void;
   clear(): void;
   ask?(question: string, options: string[]): Promise<string>;
@@ -292,8 +291,15 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
 
   const assertTitle = (): void => {
-    /* nothing: the renderer owns the terminal, the title is set via tmux */
+    try {
+      process.title = 'baton';
+      // OSC 0 sets the tab/window title (tmux also gets set-titles-string baton)
+      process.stdout.write('\u001b]0;baton\u0007');
+    } catch {
+      /* the terminal may not allow it */
+    }
   };
+  assertTitle();
 
   // "Nova · left" — the agent's name and the pane it lives in
   let selfLabel = ((): string => {
@@ -410,6 +416,51 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   });
   overlay.add(dialog);
   renderer.root.add(overlay);
+
+  // ctrl+o: the whole conversation full screen — no wordmark, no message box
+  const transcriptOverlay = new BoxRenderable(renderer, {
+    id: 'transcript',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 200,
+    visible: false,
+    flexDirection: 'column',
+    backgroundColor: theme.bg,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 1,
+    paddingBottom: 1,
+  });
+  const transcriptBox = new BoxRenderable(renderer, {
+    id: 'transcriptbox',
+    flexGrow: 1,
+    flexDirection: 'column',
+    border: true,
+    borderColor: theme.accent,
+    backgroundColor: theme.panel,
+    title: ' detailed transcript ',
+    titleAlignment: 'left',
+    paddingLeft: 2,
+    paddingRight: 2,
+  });
+  const transcriptScroll = new ScrollBoxRenderable(renderer, { id: 'transcriptscroll', flexGrow: 1, width: '100%' });
+  transcriptScroll.verticalScrollBar.visible = false;
+  transcriptScroll.horizontalScrollBar.visible = false;
+  transcriptBox.add(transcriptScroll);
+  transcriptOverlay.add(transcriptBox);
+  transcriptOverlay.add(
+    new TextRenderable(renderer, {
+      id: 'transcriptfooter',
+      content: ' ctrl+o  close      esc  close      ↑/↓  pgup/pgdn  scroll',
+      fg: theme.dim,
+      height: 1,
+      flexShrink: 0,
+    }),
+  );
+  renderer.root.add(transcriptOverlay);
 
   const viewportHeight = (): number => {
     const box = scroll.viewport as unknown as { height?: number } | undefined;
@@ -595,11 +646,6 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         );
       }
     },
-    recordTool(title, output) {
-      toolLog.push({ title, output });
-      if (toolLog.length > 60) toolLog.shift();
-      clearExpanded();
-    },
     markdown(text, color) {
       segmentBreak = true;
       const node =
@@ -647,10 +693,12 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     ask: (question: string, options: string[]) => openQuestion(question, options),
   };
 
-  // an error prints as one line and can be expanded with ctrl+o, like tool output
+  // errors print as one line; ctrl+o opens the full-screen transcript with the whole text
+  const errorLog: Array<{ label: string; text: string }> = [];
   const showError = (label: string, detail: string): void => {
     const text = detail || 'error';
-    ui.recordTool?.(label, text);
+    errorLog.push({ label, text });
+    if (errorLog.length > 20) errorLog.shift();
     ui.line(`${label}: ${text.split('\n')[0]}`, theme.error);
     ui.line('   ·   ctrl+o shows the full error', theme.dim);
   };
@@ -1647,49 +1695,62 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     }
   });
 
-  const toolLog: Array<{ title: string; output: string }> = [];
-  let expandedNodes: Renderable[] = [];
+  let transcriptOpen = false;
 
-  const clearExpanded = (): void => {
-    for (const node of expandedNodes) node.destroyRecursively();
-    expandedNodes = [];
+  // the transcript box adds a border and padding on top of the normal chat width
+  const transcriptWidth = (): number => Math.max(30, contentWidth() - 6);
+
+  const transcriptLine = (text: string, color: string): void => {
+    for (const line of wrapLines(text, transcriptWidth()).split('\n')) {
+      transcriptScroll.content.add(
+        new TextRenderable(renderer, {
+          content: line,
+          fg: color,
+          height: 1,
+          flexShrink: 0,
+          selectable: true,
+          truncate: true,
+        }),
+      );
+    }
   };
 
-  // ctrl+o expands the last tool result or error. Each line is its own node so a
-  // long message cannot be clipped by a wrapped node's measured height.
-  const toggleLastTool = (): void => {
-    if (expandedNodes.length) {
-      clearExpanded();
-      return;
+  // the whole conversation, full screen — not clipped by the message box
+  const openTranscript = (): void => {
+    for (const child of transcriptScroll.content.getChildren()) child.destroyRecursively();
+    const history = session.history();
+    if (!history.length) transcriptLine('(nothing yet — say something first)', theme.dim);
+    for (const message of history) {
+      const text = typeof message.content === 'string' ? message.content : '';
+      if (message.role === 'user') {
+        transcriptLine('', theme.dim);
+        transcriptLine(`you  ›  ${text}`, theme.user);
+      } else if (message.role === 'assistant') {
+        if (text) transcriptLine(`baton  ›  ${text}`, theme.text);
+        for (const call of message.toolCalls ?? []) {
+          const label = session.toolLabel(call);
+          transcriptLine(`  ${label.text}`, label.color);
+        }
+      } else if (message.role === 'tool') {
+        transcriptLine(`  └ ${text}`, theme.dim);
+      }
     }
-    const last = toolLog[toolLog.length - 1];
-    if (!last) {
-      ui.line('nothing to expand yet — run something first', theme.dim);
-      return;
+    if (errorLog.length) {
+      transcriptLine('', theme.dim);
+      transcriptLine('· errors ·', theme.error);
+      for (const entry of errorLog) {
+        transcriptLine(`${entry.label}: ${entry.text}`, theme.error);
+      }
     }
-    const lines = wrapLines(`${last.title}\n${last.output.trim() || '(no output)'}`, contentWidth()).split('\n');
-    for (const line of lines.slice(0, 400)) {
-      const node = new TextRenderable(renderer, {
-        content: line,
-        fg: theme.dim,
-        height: 1,
-        flexShrink: 0,
-        selectable: true,
-        truncate: true,
-      });
-      expandedNodes.push(node);
-      addNode(node);
-    }
-    if (lines.length > 400) {
-      const more = new TextRenderable(renderer, {
-        content: `… ${lines.length - 400} more lines`,
-        fg: theme.dim,
-        height: 1,
-        flexShrink: 0,
-      });
-      expandedNodes.push(more);
-      addNode(more);
-    }
+    transcriptScroll.scrollTo({ x: 0, y: 0 });
+    transcriptOpen = true;
+    transcriptOverlay.visible = true;
+  };
+
+  const closeTranscript = (): void => {
+    transcriptOpen = false;
+    transcriptOverlay.visible = false;
+    input.focus();
   };
 
   const quitApp = (): void => {
@@ -1740,12 +1801,23 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       quitApp();
       return;
     }
-    if (key?.ctrl && key?.name === 'o') {
-      if (toolLog.length > 0) {
-        toggleLastTool();
+    // while the full-screen transcript is up it owns the keys
+    if (transcriptOpen) {
+      if ((key?.ctrl && key?.name === 'o') || key?.name === 'escape') {
+        closeTranscript();
         return;
       }
-      if (!mode && !inputPurpose) openMenu();
+      const page = Math.max(4, Math.floor(viewportHeight() / 2));
+      if (key?.name === 'up') transcriptScroll.scrollBy(-1);
+      else if (key?.name === 'down') transcriptScroll.scrollBy(1);
+      else if (key?.name === 'pageup' || (key?.ctrl && key?.name === 'u')) transcriptScroll.scrollBy(-page);
+      else if (key?.name === 'pagedown' || (key?.ctrl && key?.name === 'd')) transcriptScroll.scrollBy(page);
+      else if (key?.ctrl && key?.name === 'home') transcriptScroll.scrollTo(0);
+      else if (key?.ctrl && key?.name === 'end') transcriptScroll.scrollTo(transcriptScroll.scrollHeight);
+      return;
+    }
+    if (key?.ctrl && key?.name === 'o') {
+      openTranscript();
       return;
     }
     if (key?.name === 'pageup' || (key?.ctrl && key?.name === 'u')) {
@@ -1960,7 +2032,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     if (busy || mode || inputPurpose) return;
     let messages: Awaited<ReturnType<typeof readRelayInbox>> = [];
     try {
-      messages = await readRelayInbox(options.agent);
+      messages = await readRelayInbox(options.agent, options.cwd);
     } catch {
       return;
     }
