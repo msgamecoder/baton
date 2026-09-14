@@ -24,12 +24,12 @@ Baton launches two coding agents side-by-side (left and right panes) in a single
 
 ### Install via npm
 ```bash
-npm install -g @lumora/baton
+npm install -g @lumorapp/baton
 ```
 
 Or run instantly without installing:
 ```bash
-npx @lumora/baton
+npx @lumorapp/baton
 ```
 
 ### Or Install from Source
