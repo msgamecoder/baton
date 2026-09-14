@@ -555,7 +555,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   const normalize = (text: string): string => {
     const out: string[] = [];
     let inFence = false;
-    for (const line of text.split('\n')) {
+    for (const line of text.split("\n")) {
       if (/^\s*```/.test(line)) {
         inFence = !inFence;
         out.push(line);
@@ -566,14 +566,24 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         continue;
       }
       if (/^\s*([-*_])\1{2,}\s*$/.test(line) || /^\s*=+\s*$/.test(line)) continue;
+      if (/^\s{0,3}#{1,6}\s+/.test(line)) {
+        const hText = line.replace(/^\s{0,3}#{1,6}\s+/, "").replace(/\*\*(.+?)\*\*/g, "$1");
+        out.push("");
+        out.push(`▸ ${hText}`);
+        continue;
+      }
+      if (/^\s*[-*]\s+/.test(line)) {
+        const bText = line.replace(/^\s*[-*]\s+/, "").replace(/\*\*(.+?)\*\*/g, "$1");
+        out.push(`  • ${bText}`);
+        continue;
+      }
       out.push(
         line
-          .replace(/^\s{0,3}#{1,6}\s+/, '')
-          .replace(/\*\*(.+?)\*\*/g, '$1')
-          .replace(/(^|\s)\*(?!\s)([^*\n]+?)(?<!\s)\*(?=\s|[.,!?]|$)/g, '$1$2'),
+          .replace(/\*\*(.+?)\*\*/g, "$1")
+          .replace(/(^|\s)\*(?!\s)([^*\n]+?)(?<!\s)\*(?=\s|[.,!?]|$)/g, "$1$2"),
       );
     }
-    return out.join('\n');
+    return out.join("\n");
   };
 
   const ui: ChatUi = {
@@ -585,7 +595,9 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       addNode(new TextRenderable(renderer, { content: '', fg: theme.dim, height: 1, flexShrink: 0 }));
     },
     assistant() {
-      addNode(new TextRenderable(renderer, { content: 'baton', fg: theme.accent, height: 1, flexShrink: 0 }));
+      addNode(new TextRenderable(renderer, { content: "", fg: theme.dim, height: 1, flexShrink: 0 }));
+      addNode(new TextRenderable(renderer, { content: "baton", fg: theme.accent, height: 1, flexShrink: 0 }));
+      addNode(new TextRenderable(renderer, { content: "", fg: theme.dim, height: 1, flexShrink: 0 }));
       let node: TextRenderable | MarkdownRenderable | null = null;
       let buffer = '';
       const paint = (): void => {
@@ -632,7 +644,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         },
         done() {
           lastReply = buffer;
-          addNode(new TextRenderable(renderer, { content: '', fg: theme.dim }));
+          addNode(new TextRenderable(renderer, { content: "", fg: theme.dim, height: 1, flexShrink: 0 }));
           setFooter();
         },
       };
@@ -1311,6 +1323,15 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
             for (const call of message.toolCalls ?? []) {
               const label = session.toolLabel(call);
               ui.line(label.text, label.color);
+              if (call.name === "edit_file") {
+                try {
+                  const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+                  const oldLines = String(args.old_string ?? "").split("\n");
+                  const newLines = String(args.new_string ?? "").split("\n");
+                  for (let i = 0; i < Math.min(oldLines.length, 5); i++) ui.line(`      - ${oldLines[i]}`, "#e06c75");
+                  for (let i = 0; i < Math.min(newLines.length, 5); i++) ui.line(`      + ${newLines[i]}`, "#98c379");
+                } catch {}
+              }
             }
             if (text.startsWith('[request failed]')) {
               ui.wrap(text, theme.error);
@@ -2106,6 +2127,15 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
         for (const call of message.toolCalls ?? []) {
           const label = session.toolLabel(call);
           ui.line(label.text, label.color);
+          if (call.name === "edit_file") {
+            try {
+              const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+              const oldLines = String(args.old_string ?? "").split("\n");
+              const newLines = String(args.new_string ?? "").split("\n");
+              for (let i = 0; i < Math.min(oldLines.length, 5); i++) ui.line(`      - ${oldLines[i]}`, "#e06c75");
+              for (let i = 0; i < Math.min(newLines.length, 5); i++) ui.line(`      + ${newLines[i]}`, "#98c379");
+            } catch {}
+          }
         }
         if (text.startsWith('[request failed]')) {
           ui.wrap(text, theme.error);

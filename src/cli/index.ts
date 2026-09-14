@@ -484,18 +484,17 @@ function startDaemonDetached(): void {
 
 async function cmdUp(flags: Flags): Promise<void> {
   const config = loadConfig();
-  const wantApprove = !bool(flags, 'ask');
+  const wantApprove = bool(flags, 'yes');
   if (wantApprove && config.autoApprove !== true) {
     config.autoApprove = true;
     saveConfig(config);
-    console.log('agents have full permission by default — they will not ask before writing or running things');
-    console.log('(use `baton --ask` to make them ask again)');
+    console.log('agents have full permission (--yes) — they will not ask before writing or running things');
   } else if (!wantApprove && config.autoApprove === true) {
     config.autoApprove = false;
     saveConfig(config);
     console.log('auto-approve off — agents will ask before writing or running things');
   }
-  const plan = buildUpPlan(config);
+  const plan = buildUpPlan({ ...config, autoApprove: wantApprove });
 
   if (bool(flags, 'dry-run')) {
     console.log(`splitter: ${plan.splitter} — ${plan.note}`);
@@ -1052,7 +1051,7 @@ function resolveChat(flags: Flags): {
     provider,
     model,
     apiKey,
-    autoApprove: bool(flags, 'yes') || config.autoApprove === true,
+    autoApprove: bool(flags, 'yes') || (config.autoApprove === true && !bool(flags, 'ask')),
   };
 }
 

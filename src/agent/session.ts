@@ -341,12 +341,24 @@ export function createSession(options: SessionOptions): Session {
     }
   };
 
+  const isRelayCommand = (command: string): boolean => {
+    const trimmed = command.trim();
+    return (
+      /\bbaton\s+(?:inbox|send|ack|status|watch)\b/i.test(trimmed) ||
+      /^(?:export\s+[^;]+;\s*)*(?:baton\s+)?(?:inbox|send|ack|status|watch)\b/i.test(trimmed)
+    );
+  };
+
   const confirmTool = async (toolName: string, args: Record<string, unknown>): Promise<boolean> => {
     if (autoApprove) return true;
-    const detail = (args.command as string) ?? (args.path as string) ?? '';
+    if (toolName === "shell") {
+      const command = String(args.command ?? "");
+      if (isRelayCommand(command)) return true;
+    }
+    const detail = (args.command as string) ?? (args.path as string) ?? "";
     const question = `run ${toolName} ${String(detail).slice(0, 80)}?`;
     if (confirmHandler) return confirmHandler(question);
-    const { confirm } = await import('../core/prompt.ts');
+    const { confirm } = await import("../core/prompt.ts");
     return confirm(`${question} [y/N] `);
   };
 
@@ -600,14 +612,45 @@ export function createSession(options: SessionOptions): Session {
               const label = toolLabel(call);
               ui.line(label.text, label.color);
             },
-            onToolEnd: (_call, output, isError) => {
-              const first = output.split('\n')[0].slice(0, 120);
-              const more = output.split('\n').length > 1 ? '   ·   ctrl+o shows it all' : '';
+            onToolEnd: (call, output, isError) => {
+              const first = output.split("\n")[0].slice(0, 120);
               const changed = /^(wrote|edited) /.test(first);
               ui.line(
-                `   └ ${first}${more}`,
-                isError ? '#e06c75' : changed ? '#7fd1b9' : '#565672',
+                `   └ ${first}`,
+                isError ? "#e06c75" : changed ? "#7fd1b9" : "#565672",
               );
+              if (call.name === "edit_file" && !isError) {
+                try {
+                  const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+                  const oldLines = String(args.old_string ?? "").split("\n");
+                  const newLines = String(args.new_string ?? "").split("\n");
+                  const maxShow = 6;
+                  for (let i = 0; i < Math.min(oldLines.length, maxShow); i++) {
+                    ui.line(`      - ${oldLines[i]}`, "#e06c75");
+                  }
+                  if (oldLines.length > maxShow) {
+                    ui.line(`      … (${oldLines.length - maxShow} more deleted lines)`, "#8c5058");
+                  }
+                  for (let i = 0; i < Math.min(newLines.length, maxShow); i++) {
+                    ui.line(`      + ${newLines[i]}`, "#98c379");
+                  }
+                  if (newLines.length > maxShow) {
+                    ui.line(`      … (${newLines.length - maxShow} more added lines)`, "#5c8a50");
+                  }
+                } catch {}
+              } else if (call.name === "write_file" && !isError) {
+                try {
+                  const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+                  const lines = String(args.content ?? "").split("\n");
+                  const maxShow = 5;
+                  for (let i = 0; i < Math.min(lines.length, maxShow); i++) {
+                    ui.line(`      + ${lines[i]}`, "#98c379");
+                  }
+                  if (lines.length > maxShow) {
+                    ui.line(`      … (${lines.length - maxShow} more lines)`, "#5c8a50");
+                  }
+                } catch {}
+              }
             },
           },
         });

@@ -40,7 +40,7 @@ function batonAgentArgs(agent: AgentConfig, autoApprove = false): string[] {
 }
 
 function batonAgentCommand(agent: AgentConfig, autoApprove = false): string {
-  return `${process.execPath} ${process.argv[1]} ${batonAgentArgs(agent, autoApprove).join(' ')}`;
+  return `${process.execPath} --experimental-ffi ${process.argv[1]} ${batonAgentArgs(agent, autoApprove).join(' ')}`;
 }
 
 function externalAgentCommand(agent: AgentConfig): string {
@@ -80,11 +80,12 @@ export function buildUpPlan(config: BatonConfig): UpPlan {
 
   if (splitter.name === 'tmux' && agents.length > 0) {
     const tmux = tmuxBin();
+    const cwd = process.cwd();
     const commands = [
-      `${tmux} new-session -d -s baton -n ${agents[0].role ?? agents[0].name} '${paneCommand(agents[0], config.autoApprove)}'`,
+      `${tmux} new-session -d -s baton -c '${cwd}' -n ${agents[0].role ?? agents[0].name} '${paneCommand(agents[0], config.autoApprove)}'`,
     ];
     for (const agent of agents.slice(1)) {
-      commands.push(`${tmux} split-window -h -t baton '${paneCommand(agent, config.autoApprove)}'`);
+      commands.push(`${tmux} split-window -h -t baton -c '${cwd}' '${paneCommand(agent, config.autoApprove)}'`);
     }
     commands.push(`${tmux} set-option -t baton status off`);
     commands.push(`${tmux} set-option -t baton mouse on`);

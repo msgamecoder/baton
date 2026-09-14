@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_DIR } from '../core/paths.ts';
+import { CHAT_DIR, PROJECTS_DIR, projectChatDir } from '../core/paths.ts';
 import type { ChatMessage } from '../providers/types.ts';
 
 export interface Usage {
@@ -46,23 +46,34 @@ export function newSessionId(): string {
   return id;
 }
 
-export function sessionPath(id: string): string {
-  return join(CHAT_DIR, `${id}.json`);
+export function sessionPath(id: string, cwd?: string): string {
+  const dir = cwd ? projectChatDir(cwd) : CHAT_DIR;
+  return join(dir, `${id}.json`);
 }
 
 export function saveSessionRecord(record: SessionRecord): void {
-  mkdirSync(CHAT_DIR, { recursive: true });
-  writeFileSync(sessionPath(record.id), JSON.stringify(record));
+  const dir = record.cwd ? projectChatDir(record.cwd) : CHAT_DIR;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${record.id}.json`), JSON.stringify(record));
 }
 
-export function readSessionRecord(id: string): SessionRecord | null {
-  const path = sessionPath(id);
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as SessionRecord;
-  } catch {
-    return null;
+export function readSessionRecord(id: string, cwd?: string): SessionRecord | null {
+  const candidates: string[] = [];
+  if (cwd) candidates.push(join(projectChatDir(cwd), `${id}.json`));
+  candidates.push(join(CHAT_DIR, `${id}.json`));
+  if (existsSync(PROJECTS_DIR)) {
+    for (const p of readdirSync(PROJECTS_DIR)) {
+      candidates.push(join(PROJECTS_DIR, p, "chats", `${id}.json`));
+    }
   }
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      try {
+        return JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
+      } catch {}
+    }
+  }
+  return null;
 }
 
 /**
@@ -70,26 +81,58 @@ export function readSessionRecord(id: string): SessionRecord | null {
  * project's sessions; omit it for everything (used by tooling/tests).
  */
 export function listSessionRecords(cwd?: string): SessionRecord[] {
-  if (!existsSync(CHAT_DIR)) return [];
   const out: SessionRecord[] = [];
-  for (const file of readdirSync(CHAT_DIR)) {
-    if (!file.endsWith('.json')) continue;
-    try {
-      const record = JSON.parse(readFileSync(join(CHAT_DIR, file), 'utf8')) as SessionRecord;
-      if (cwd && record.cwd !== cwd) continue;
-      out.push(record);
-    } catch {
-      continue;
+  const seen = new Set<string>();
+
+  const scanDir = (dir: string): void => {
+    if (!existsSync(dir)) return;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const record = JSON.parse(readFileSync(join(dir, file), "utf8")) as SessionRecord;
+        if (cwd && record.cwd && record.cwd !== cwd) continue;
+        if (cwd && !record.cwd && dir === CHAT_DIR) continue;
+        if (!seen.has(record.id)) {
+          seen.add(record.id);
+          out.push(record);
+        }
+      } catch {}
+    }
+  };
+
+  if (cwd) {
+    scanDir(projectChatDir(cwd));
+    scanDir(CHAT_DIR);
+  } else {
+    scanDir(CHAT_DIR);
+    if (existsSync(PROJECTS_DIR)) {
+      for (const p of readdirSync(PROJECTS_DIR)) {
+        scanDir(join(PROJECTS_DIR, p, "chats"));
+      }
     }
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export function deleteSessionRecord(id: string): boolean {
-  const path = sessionPath(id);
-  if (!existsSync(path)) return false;
-  unlinkSync(path);
-  return true;
+export function deleteSessionRecord(id: string, cwd?: string): boolean {
+  let deleted = false;
+  const candidates: string[] = [];
+  if (cwd) candidates.push(join(projectChatDir(cwd), `${id}.json`));
+  candidates.push(join(CHAT_DIR, `${id}.json`));
+  if (existsSync(PROJECTS_DIR)) {
+    for (const p of readdirSync(PROJECTS_DIR)) {
+      candidates.push(join(PROJECTS_DIR, p, "chats", `${id}.json`));
+    }
+  }
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      try {
+        unlinkSync(path);
+        deleted = true;
+      } catch {}
+    }
+  }
+  return deleted;
 }
 
 export function totalTokens(usage: Usage): number {

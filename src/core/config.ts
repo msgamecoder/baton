@@ -89,7 +89,7 @@ export function defaultConfig(): BatonConfig {
     port: DEFAULT_PORT,
     maxHop: DEFAULT_MAX_HOP,
     autoContinue: true,
-    autoApprove: true,
+    autoApprove: false,
   };
 }
 
