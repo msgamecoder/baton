@@ -673,37 +673,37 @@ export function createSession(options: SessionOptions): Session {
 }
 
 export function runUpdate(): { ok: boolean; output: string } {
-  const sourceDir = (() => {
+  const localCheckout = existsSync("/home/mxgamecoder/baton/.git") ? "/home/mxgamecoder/baton" : "";
+  const sourceDir = localCheckout || (() => {
     try {
-      return join(dirname(new URL(import.meta.url).pathname), '..', '..');
+      return join(dirname(new URL(import.meta.url).pathname), "..", "..");
     } catch {
-      return '';
+      return "";
     }
   })();
 
-  const repo = 'github:msgamecoder/baton';
+  if (sourceDir && existsSync(join(sourceDir, ".git"))) {
+    spawnSync("git", ["-C", sourceDir, "pull", "--ff-only"], { encoding: "utf8" });
+  }
 
-  const fromGithub = spawnSync('npm', ['install', '-g', repo, '--no-fund', '--no-audit'], { encoding: 'utf8' });
+  if (sourceDir && existsSync(join(sourceDir, "package.json"))) {
+    const local = spawnSync("npm", ["install", "-g", "--force", sourceDir, "--no-fund", "--no-audit"], { encoding: "utf8" });
+    const output = `${local.stdout ?? ""}${local.stderr ?? ""}`.trim().split("\n").slice(-2).join("\n");
+    const check = spawnSync("which", ["baton"], { encoding: "utf8" });
+    if (local.status === 0 && check.status === 0) {
+      return { ok: true, output: `reinstalled latest from ${sourceDir}` };
+    }
+    return { ok: false, output: output || "install failed" };
+  }
+
+  const repo = "github:msgamecoder/baton";
+  const fromGithub = spawnSync("npm", ["install", "-g", "--force", repo, "--no-fund", "--no-audit"], { encoding: "utf8" });
   if (fromGithub.status === 0) {
-    const check = spawnSync('which', ['baton'], { encoding: 'utf8' });
+    const check = spawnSync("which", ["baton"], { encoding: "utf8" });
     if (check.status === 0) {
       return { ok: true, output: `installed from ${repo}` };
     }
   }
 
-  if (sourceDir && existsSync(join(sourceDir, '.git'))) {
-    spawnSync('git', ['-C', sourceDir, 'pull', '--ff-only'], { encoding: 'utf8' });
-  }
-
-  if (sourceDir && existsSync(join(sourceDir, 'package.json'))) {
-    const local = spawnSync('npm', ['install', '-g', sourceDir, '--no-fund', '--no-audit'], { encoding: 'utf8' });
-    const output = `${local.stdout ?? ''}${local.stderr ?? ''}`.trim().split('\n').slice(-2).join('\n');
-    const check = spawnSync('which', ['baton'], { encoding: 'utf8' });
-    if (local.status === 0 && check.status === 0) {
-      return { ok: true, output: `reinstalled from ${sourceDir}` };
-    }
-    return { ok: false, output: output || 'install failed' };
-  }
-
-  return { ok: false, output: 'baton is not published to npm yet and no local checkout was found' };
+  return { ok: false, output: "update failed" };
 }
