@@ -308,6 +308,10 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
     return agent ? formatAgent(agent) : options.agent;
   })();
   let selfAliases = ((): string[] => agentAliases(loadConfig().agents, options.agent))();
+  let selfName = ((): string => {
+    const agent = resolveAgent(loadConfig().agents, options.agent);
+    return agent?.name ?? options.agent;
+  })();
 
   const root = new BoxRenderable(renderer, {
     id: 'root',
@@ -325,7 +329,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
   header.add(new ASCIIFontRenderable(renderer, { id: 'wordmark', text: 'BATON', font: 'tiny', color: theme.accent }));
   const subtitle = new TextRenderable(renderer, {
     id: 'subtitle',
-    content: `${selfLabel}   ·   ${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
+    content: `${selfName}   ·   ${options.providerName}   ·   ${options.model}   ·   v${options.version}`,
     fg: theme.dim,
   });
   header.add(subtitle);
@@ -685,7 +689,7 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       }
     },
     setModel(model) {
-      subtitle.content = `${selfLabel}   ·   ${options.providerName}   ·   ${model}   ·   v${options.version}`;
+      subtitle.content = `${selfName}   ·   ${options.providerName}   ·   ${model}   ·   v${options.version}`;
     },
     clear() {
       for (const child of scroll.content.getChildren()) child.destroyRecursively();
@@ -1083,7 +1087,8 @@ export async function runChatApp(options: ChatAppOptions): Promise<void> {
       selfLabel = name;
       selfAliases = [name];
     }
-    subtitle.content = `${selfLabel}   ·   ${options.providerName}   ·   ${session.model()}   ·   v${options.version}`;
+    selfName = name;
+    subtitle.content = `${selfName}   ·   ${options.providerName}   ·   ${session.model()}   ·   v${options.version}`;
   };
 
   setConfirmHandler(async (question) => {
